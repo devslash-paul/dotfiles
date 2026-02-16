@@ -97,8 +97,10 @@ require("lazy").setup({
     {
         "neovim/nvim-lspconfig",
         config = function()
-            vim.lsp.config("rust_analyzer", {})
-            vim.lsp.enable("rust_analyzer")
+            if vim.fn.executable("rust-analyzer") == 1 then
+                vim.lsp.config("rust_analyzer", {})
+                vim.lsp.enable("rust_analyzer")
+            end
         end,
     },
 
