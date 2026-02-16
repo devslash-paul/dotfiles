@@ -93,11 +93,12 @@ require("lazy").setup({
         },
     },
 
-    -- LSP
+    -- LSP (nvim-lspconfig still needed for server configs, but use new API)
     {
         "neovim/nvim-lspconfig",
         config = function()
-            require("lspconfig").rust_analyzer.setup({})
+            vim.lsp.config("rust_analyzer", {})
+            vim.lsp.enable("rust_analyzer")
         end,
     },
 
