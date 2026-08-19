@@ -114,6 +114,116 @@ ensure_command() {
   fi
 }
 
+# --- Neovim version check & install ----------------------------------------
+# Config requires nvim >= 0.11 (vim.lsp.enable, built-in treesitter).
+# If the system nvim is missing or too old, install the official static
+# binary into ~/.local so it takes precedence on PATH.
+
+NVIM_MIN_MINOR=11
+
+nvim_version_ok() {
+  # Return 0 if the first line of `nvim --version` reports v0.{NVIM_MIN_MINOR}+
+  local first_line major minor
+  first_line="$(nvim --version 2>/dev/null | head -n1)"
+  case "$first_line" in
+    NVIM\ v[0-9]*) : ;;
+    *) return 1 ;;
+  esac
+  major="${first_line#*v}"; major="${major%%.*}"
+  minor="$(printf '%s\n' "$first_line" | sed -n 's/.*v[0-9]*\.\([0-9][0-9]*\).*/\1/p')"
+  case "$major" in ''|*[!0-9]*) return 1 ;; esac
+  case "$minor" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$major" -gt 0 ]; then return 0; fi
+  if [ "$minor" -ge "$NVIM_MIN_MINOR" ]; then return 0; fi
+  return 1
+}
+
+nvim_asset_name() {
+  # Echo the correct release asset name for this platform
+  if [ "$(uname -s)" = "Darwin" ]; then
+    case "$(uname -m)" in
+      arm64)  echo "nvim-macos-arm64.tar.gz" ;;
+      x86_64) echo "nvim-macos-x86_64.tar.gz" ;;
+      *) return 1 ;;
+    esac
+  else
+    case "$(uname -m)" in
+      x86_64|amd64)    echo "nvim-linux-x86_64.tar.gz" ;;
+      aarch64|arm64)   echo "nvim-linux-aarch64.tar.gz" ;;
+      *) return 1 ;;
+    esac
+  fi
+}
+
+install_nvim_binary() {
+  local asset version url dest tmp
+  asset="$(nvim_asset_name)" || {
+    echo "Error: unsupported platform ($(uname -s)/$(uname -m)) for nvim binary install." >&2
+    return 1
+  }
+
+  # Prefer latest stable from GitHub API; fall back to a known-good tag
+  version="$(curl -fsSL --max-time 15 \
+    https://api.github.com/repos/neovim/neovim/releases/latest 2>/dev/null \
+    | sed -n 's/.*"tag_name": *"\(v[0-9][^"]*\)".*/\1/p' | head -n1)" || version=""
+  [ -n "$version" ] || version="v0.12.4"
+
+  url="https://github.com/neovim/neovim/releases/download/${version}/${asset}"
+  dest="$HOME/.local"
+  tmp="$(mktemp -d)"
+
+  echo "Installing nvim ${version} (${asset}) to ${dest}"
+  if ! curl -fsSL --max-time 120 -o "$tmp/nvim.tar.gz" "$url"; then
+    echo "Error: failed to download nvim from $url" >&2
+    rm -rf "$tmp"
+    return 1
+  fi
+
+  mkdir -p "$dest"
+  rm -rf "$dest/nvim"
+  tar -xzf "$tmp/nvim.tar.gz" -C "$dest"
+  # Archive extracts to nvim-linux-x86_64 / nvim-macos-arm64 / etc.
+  local extracted
+  extracted="$(ls "$dest" | grep -E '^nvim-(linux|macos)' | head -n1)"
+  [ -n "$extracted" ] || { echo "Error: unexpected archive contents" >&2; rm -rf "$tmp"; return 1; }
+  mv "$dest/$extracted" "$dest/nvim"
+  rm -rf "$tmp"
+
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$dest/nvim/bin/nvim" "$HOME/.local/bin/nvim"
+  echo "  Installed nvim ${version} at $dest/nvim (linked to $HOME/.local/bin/nvim)"
+}
+
+ensure_nvim() {
+  if ! command -v nvim >/dev/null 2>&1; then
+    echo "nvim not found — installing official binary"
+    install_nvim_binary
+  elif ! nvim_version_ok; then
+    local current
+    current="$(nvim --version 2>/dev/null | head -n1)"
+    echo "nvim found but too old (${current}) — config requires v0.${NVIM_MIN_MINOR}+"
+    install_nvim_binary
+  else
+    local current
+    current="$(nvim --version 2>/dev/null | head -n1)"
+    echo "  nvim OK: ${current}"
+  fi
+
+  # Ensure ~/.local/bin is on PATH for this shell (and future shells)
+    case ":$PATH:" in
+      *":$HOME/.local/bin:"*) ;;
+      *)
+        export PATH="$HOME/.local/bin:$PATH"
+        echo "  Added $HOME/.local/bin to PATH for this session"
+        # Persist to zshrc if not already there
+        if ! grep -q '\.local/bin' "$HOME/.zshrc" 2>/dev/null; then
+          echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+          echo "  Added $HOME/.local/bin to \$HOME/.zshrc"
+        fi
+        ;;
+    esac
+}
+
 install_oh_my_zsh() {
   if [ -d "$HOME/.oh-my-zsh" ]; then
     echo "  Found existing Oh My Zsh at $HOME/.oh-my-zsh"
@@ -156,6 +266,7 @@ echo "Installing dotfiles from $DOTFILES"
 ensure_command git git
 ensure_command zsh zsh
 ensure_command tmux tmux
+ensure_nvim
 install_oh_my_zsh
 ensure_default_shell_is_zsh
 

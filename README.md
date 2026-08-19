@@ -16,16 +16,18 @@ Reference: https://coder.com/docs/user-guides/workspace-dotfiles
 
 The installer:
 - Ensures `git`, `zsh`, and `tmux` are installed (via `brew`, `apt`, `dnf`, `yum`, `pacman`, or `apk`).
+- Checks the `nvim` version: if it's missing or below v0.11, installs the official static binary from GitHub releases into `~/.local` (Linux x86_64/aarch64, macOS x86_64/arm64), and links it into `~/.local/bin`.
+- Ensures `~/.local/bin` is on `PATH` (persists to `~/.zshrc` if needed).
 - Installs Oh My Zsh if missing.
 - Attempts to set your default shell to `zsh` (`chsh`) and prints a manual command when not permitted.
 - Creates symlinks for Neovim, tmux, and zsh config.
 - Backs up existing targets before replacing them, using `*.backup-YYYYMMDD-HHMMSS`.
-- Creates `~/.local/bin/vim -> nvim` only when `nvim` exists.
+- Creates `~/.local/bin/vim -> nvim` pointing at the verified binary.
 
 ## Requirements
 
 Minimum:
-- `nvim` (optional for install script success, required for Neovim config)
+- `nvim` v0.11+ (the installer installs it automatically if missing or too old)
 
 Recommended for full Neovim behavior:
 - `ripgrep` (used by Telescope `live_grep`)
