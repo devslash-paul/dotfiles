@@ -177,13 +177,13 @@ require("lazy").setup({
                 vim.lsp.enable("rust_analyzer")
             end
 
-
-            if vim.fn.executable("tsc") == 1 then
-                vim.lsp.config("tsc", {})
-                vim.lsp.enable("tsc")
+            if vim.fn.executable("typescript-language-server") == 1 then
+                vim.lsp.config("ts_ls", {})
+                vim.lsp.enable("ts_ls")
             end
-        end
-        },
+        end,
+    },
+
     -- Git stuff
     {
         "tpope/vim-fugitive",
@@ -247,7 +247,7 @@ vim.keymap.set("n", "<leader>tw", function()
     })
 
     vim.api.nvim_set_current_win(source_win)
-end, { desc = "Vitest current file" })
+end, { desc = "Vitest watch current file" })
 vim.keymap.set("n", "<leader>tf", function()
     local file = vim.fn.expand("%:p")
     local source_win = vim.api.nvim_get_current_win()
@@ -277,7 +277,7 @@ vim.keymap.set("n", "<leader>tf", function()
     })
 
     vim.api.nvim_set_current_win(source_win)
-end, { desc = "Vitest current file" })
+end, { desc = "Vitest run current file once" })
 
 vim.keymap.set("n", "<leader>tc", function()
     for _, win in ipairs(vim.api.nvim_list_wins()) do
