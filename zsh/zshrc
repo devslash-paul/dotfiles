@@ -10,6 +10,9 @@ else
   echo "[dotfiles] oh-my-zsh not found at $ZSH; continuing with plain zsh." >&2
 fi
 
+# Keep PATH free of duplicates (re-sourcing this file won't grow it).
+typeset -U path PATH
+
 # Local bin paths
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -20,24 +23,63 @@ elif [ -f "$HOME/.asdf/asdf.sh" ]; then
   . "$HOME/.asdf/asdf.sh"
 fi
 
-# Added by LM Studio CLI (lms)
-export PATH="$PATH:$HOME/.lmstudio/bin"
+# LM Studio CLI (lms)
+[ -d "$HOME/.lmstudio/bin" ] && export PATH="$PATH:$HOME/.lmstudio/bin"
 
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
-[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
+[ -s "$BUN_INSTALL/_bun" ] && source "$BUN_INSTALL/_bun"
 
-# nvm (Homebrew on macOS or default ~/.nvm)
+# nvm: lazy-loaded. Sourcing nvm and running `nvm use default` costs ~150ms per
+# shell, so put the default node's bin on PATH directly and only load nvm
+# itself the first time `nvm` is called.
 export NVM_DIR="$HOME/.nvm"
-if [ -s "/opt/homebrew/opt/nvm/nvm.sh" ]; then
-  . "/opt/homebrew/opt/nvm/nvm.sh"
-elif [ -s "$NVM_DIR/nvm.sh" ]; then
-  . "$NVM_DIR/nvm.sh"
-fi
+_nvm_default_bin() {
+  setopt local_options numeric_glob_sort null_glob
+  local alias_file="$NVM_DIR/alias/default" want dirs
+  [ -r "$alias_file" ] && want="$(<"$alias_file")"
+  want="${want#v}"
+  # Only plain versions ("22" or "22.19.0") are resolved here; aliases like
+  # lts/* fall back to the newest installed version.
+  case "$want" in
+    ''|*[!0-9.]*) want="" ;;
+  esac
+  dirs=("$NVM_DIR"/versions/node/v${want}*(/On[1]))
+  [ -n "$dirs" ] || dirs=("$NVM_DIR"/versions/node/v*(/On[1]))
+  [ -n "$dirs" ] && print -r -- "${dirs[1]}/bin"
+}
+_nvm_bin="$(_nvm_default_bin)"
+[ -n "$_nvm_bin" ] && export PATH="$_nvm_bin:$PATH"
+unset _nvm_bin
 
-if [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ]; then
-  . "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"
-elif [ -s "$NVM_DIR/bash_completion" ]; then
-  . "$NVM_DIR/bash_completion"
+nvm() {
+  unfunction nvm
+  if [ -s "/opt/homebrew/opt/nvm/nvm.sh" ]; then
+    . "/opt/homebrew/opt/nvm/nvm.sh" --no-use
+  elif [ -s "$NVM_DIR/nvm.sh" ]; then
+    . "$NVM_DIR/nvm.sh" --no-use
+  else
+    echo "nvm: not installed" >&2
+    return 1
+  fi
+  if [ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ]; then
+    . "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"
+  elif [ -s "$NVM_DIR/bash_completion" ]; then
+    . "$NVM_DIR/bash_completion"
+  fi
+  nvm "$@"
+}
+
+# pnpm (macOS keeps it under Library, Linux under XDG data)
+if [ "$(uname -s)" = "Darwin" ]; then
+  export PNPM_HOME="$HOME/Library/pnpm"
+else
+  export PNPM_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/pnpm"
 fi
+export PATH="$PNPM_HOME:$PATH"
+
+# Per-machine overrides (not tracked in this repo). Keep this LAST so it can
+# override anything above. Put machine-specific env vars, PATH tweaks and
+# aliases in ~/.local_zshrc.
+[ -r "$HOME/.local_zshrc" ] && source "$HOME/.local_zshrc"

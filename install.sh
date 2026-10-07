@@ -274,6 +274,12 @@ safe_link "$DOTFILES/nvim" "$HOME/.config/nvim"
 safe_link "$DOTFILES/tmux/tmux.conf" "$HOME/.tmux.conf"
 safe_link "$DOTFILES/zsh/zshrc" "$HOME/.zshrc"
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  safe_link "$DOTFILES/ghostty/config" "$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty"
+else
+  safe_link "$DOTFILES/ghostty/config" "$HOME/.config/ghostty/config"
+fi
+
 mkdir -p "$HOME/.local/bin"
 if command -v nvim >/dev/null 2>&1; then
   ln -sfn "$(command -v nvim)" "$HOME/.local/bin/vim"

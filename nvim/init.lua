@@ -9,6 +9,9 @@ if not vim.loop.fs_stat(lazypath) then
 end
 vim.opt.rtp:prepend(lazypath)
 
+-- Mouse
+vim.opt.mouse = "a"
+
 -- Basics
 vim.opt.number = true
 vim.opt.relativenumber = true
@@ -41,6 +44,65 @@ vim.api.nvim_create_autocmd("FileType", {
     end,
 })
 
+-- A better hover implementation
+--
+local function hover_with_definition()
+    local win = vim.api.nvim_get_current_win()
+    local client = vim.lsp.get_clients({ bufnr = 0 })[1]
+    local params = vim.lsp.util.make_position_params(
+        win,
+        client and client.offset_encoding or "utf-16"
+    )
+
+    vim.lsp.buf_request(0, "textDocument/definition", params, function(_, definition)
+        local location
+
+        if definition then
+            if definition.uri or definition.targetUri then
+                location = definition
+            elseif definition[1] then
+                location = definition[1]
+            end
+        end
+
+        vim.lsp.buf_request(0, "textDocument/hover", params, function(_, hover)
+            if not hover or not hover.contents then
+                return
+            end
+
+            local lines = {}
+
+            if location then
+                local uri = location.uri or location.targetUri
+                local range = location.range or location.targetSelectionRange
+
+                if uri and range then
+                    local path = vim.fn.fnamemodify(
+                        vim.uri_to_fname(uri),
+                        ":."
+                    )
+                    local line = range.start.line + 1
+
+                    table.insert(
+                        lines,
+                        string.format("Defined at: %s:%d", path, line)
+                    )
+                    table.insert(lines, "")
+                end
+            end
+
+            vim.list_extend(
+                lines,
+                vim.lsp.util.convert_input_to_markdown_lines(hover.contents)
+            )
+
+            vim.lsp.util.open_floating_preview(lines, "markdown", {
+                border = "rounded",
+            })
+        end)
+    end)
+end
+
 -- Markdown: don't hide syntax behind conceal
 vim.g.markdown_recommended_style = 0
 vim.api.nvim_create_autocmd("FileType", {
@@ -68,13 +130,20 @@ require("lazy").setup({
     {
         "nvim-telescope/telescope.nvim",
         dependencies = { "nvim-lua/plenary.nvim" },
+        config = function()
+            require("telescope").setup({
+                defaults = {
+                    path_display = { "filename_first" },
+                },
+            })
+        end,
         keys = {
             { "<C-p>", function() require("telescope.builtin").find_files() end, desc = "Find file" },
             { "<leader>fg", function() require("telescope.builtin").live_grep() end, desc = "Search in files" },
             { "<leader>fb", function() require("telescope.builtin").buffers() end, desc = "Open buffers" },
             { "<leader>fd", function() require("telescope.builtin").diagnostics() end, desc = "LSP diagnostics" },
             { "<leader>fs", function() require("telescope.builtin").lsp_document_symbols() end, desc = "Symbols in file" },
-            { "<leader>fw", function() require("telescope.builtin").lsp_workspace_symbols() end, desc = "Symbols in project" },
+            { "<leader>fw", function() require("telescope.builtin").lsp_dynamic_workspace_symbols() end, desc = "Symbols in project" },
         },
     },
 
@@ -85,7 +154,13 @@ require("lazy").setup({
         config = function()
             vim.g.loaded_netrw = 1
             vim.g.loaded_netrwPlugin = 1
-            require("nvim-tree").setup()
+            require("nvim-tree").setup({
+                actions = {
+                    open_file = {
+                        resize_window = false,
+                    },
+                },
+            })
         end,
         keys = {
             { "<leader>e", "<cmd>NvimTreeToggle<CR>", desc = "Toggle file tree" },
@@ -101,7 +176,17 @@ require("lazy").setup({
                 vim.lsp.config("rust_analyzer", {})
                 vim.lsp.enable("rust_analyzer")
             end
-        end,
+
+
+            if vim.fn.executable("tsc") == 1 then
+                vim.lsp.config("tsc", {})
+                vim.lsp.enable("tsc")
+            end
+        end
+        },
+    -- Git stuff
+    {
+        "tpope/vim-fugitive",
     },
 
     -- Symbol tree (like IntelliJ's Structure view)
@@ -123,12 +208,8 @@ require("lazy").setup({
 vim.api.nvim_create_autocmd("LspAttach", {
     callback = function(args)
         local opts = { buffer = args.buf }
-        vim.keymap.set("n", "gr", function()                             -- show usages
-            vim.notify("Finding references...")
-            vim.lsp.buf.references()
-        end, opts)
         vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)        -- go to definition
-        vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)              -- hover docs
+        vim.keymap.set("n", "K", hover_with_definition, opts)              -- hover docs
         vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)    -- rename symbol
         vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
         vim.keymap.set("n", "gl", vim.diagnostic.open_float, opts)        -- show diagnostic under cursor
@@ -137,3 +218,73 @@ vim.api.nvim_create_autocmd("LspAttach", {
         vim.keymap.set("n", "<leader>q", ":cclose<CR>", opts)
     end,
 })
+
+vim.keymap.set("n", "<leader>tw", function()
+    local file = vim.fn.expand("%:p")
+    local source_win = vim.api.nvim_get_current_win()
+
+    local root = vim.fs.root(file, {
+        "vitest.config.ts",
+        "vitest.config.js",
+        "package.json",
+    })
+
+    if not root then
+        vim.notify("Could not find Vitest/package root", vim.log.levels.ERROR)
+        return
+    end
+
+    vim.cmd("botright 60vnew")
+
+    vim.fn.jobstart({
+        "pnpm",
+        "exec",
+        "vitest",
+        file,
+    }, {
+        term = true,
+        cwd = root,
+    })
+
+    vim.api.nvim_set_current_win(source_win)
+end, { desc = "Vitest current file" })
+vim.keymap.set("n", "<leader>tf", function()
+    local file = vim.fn.expand("%:p")
+    local source_win = vim.api.nvim_get_current_win()
+
+    local root = vim.fs.root(file, {
+        "vitest.config.ts",
+        "vitest.config.js",
+        "package.json",
+    })
+
+    if not root then
+        vim.notify("Could not find Vitest/package root", vim.log.levels.ERROR)
+        return
+    end
+
+    vim.cmd("botright 60vnew")
+
+    vim.fn.jobstart({
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        file,
+    }, {
+        term = true,
+        cwd = root,
+    })
+
+    vim.api.nvim_set_current_win(source_win)
+end, { desc = "Vitest current file" })
+
+vim.keymap.set("n", "<leader>tc", function()
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+        local buf = vim.api.nvim_win_get_buf(win)
+
+        if vim.bo[buf].buftype == "terminal" then
+            vim.api.nvim_win_close(win, true)
+        end
+    end
+end, { desc = "Close test terminal" })
