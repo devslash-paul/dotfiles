@@ -189,6 +189,17 @@ require("lazy").setup({
         "tpope/vim-fugitive",
     },
 
+    -- Markdown: off by default so you edit raw text; toggle on to read
+    {
+        "MeanderingProgrammer/render-markdown.nvim",
+        dependencies = { "nvim-web-devicons" },
+        ft = "markdown",
+        opts = { enabled = false },
+        keys = {
+            { "<leader>mr", "<cmd>RenderMarkdown toggle<CR>", desc = "Toggle markdown render" },
+        },
+    },
+
     -- Symbol tree (like IntelliJ's Structure view)
     {
         "stevearc/aerial.nvim",
