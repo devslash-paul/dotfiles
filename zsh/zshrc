@@ -4,6 +4,9 @@ export ZSH="$HOME/.oh-my-zsh"
 ZSH_THEME="robbyrussell"
 plugins=(git)
 
+# Update oh-my-zsh in the background instead of prompting y/n.
+zstyle ':omz:update' mode background-alpha
+
 if [ -f "$ZSH/oh-my-zsh.sh" ]; then
   source "$ZSH/oh-my-zsh.sh"
 else
