@@ -177,8 +177,68 @@ require("lazy").setup({
                 vim.lsp.enable("rust_analyzer")
             end
 
+            -- TypeScript 7+ (native) ships its own language server: `tsc --lsp --stdio`.
+            -- TypeScript 6 and older need typescript-language-server (ts_ls).
+            -- Pick per project from the project's installed typescript, falling back
+            -- to the tsc on PATH when the project has none.
+            local ts_roots = { "tsconfig.json", "jsconfig.json", "package.json", ".git" }
+            local ts_filetypes = { "javascript", "javascriptreact", "typescript", "typescriptreact" }
+
+            -- nearest node_modules (walking up, for hoisted monorepos) that has typescript
+            local function ts_node_modules(root)
+                local dir = root
+                while dir do
+                    if vim.uv.fs_stat(dir .. "/node_modules/typescript/package.json") then
+                        return dir .. "/node_modules"
+                    end
+                    local parent = vim.fs.dirname(dir)
+                    dir = parent ~= dir and parent or nil
+                end
+            end
+
+            local global_ts_major
+            local function ts_major(root)
+                local node_modules = ts_node_modules(root)
+                if node_modules then
+                    local ok, pkg = pcall(vim.json.decode,
+                        table.concat(vim.fn.readfile(node_modules .. "/typescript/package.json"), "\n"))
+                    local major = ok and tonumber(tostring(pkg.version):match("^(%d+)"))
+                    if major then return major end
+                end
+                if global_ts_major == nil then
+                    local out = vim.fn.executable("tsc") == 1
+                        and vim.system({ "tsc", "--version" }, { text = true }):wait().stdout
+                        or ""
+                    global_ts_major = tonumber(out:match("Version%s+(%d+)")) or 0
+                end
+                return global_ts_major
+            end
+
+            -- attach only when the project's TypeScript matches this server
+            local function ts_root_dir(native)
+                return function(bufnr, on_dir)
+                    local root = vim.fs.root(bufnr, ts_roots)
+                    if root and (ts_major(root) >= 7) == native then
+                        on_dir(root)
+                    end
+                end
+            end
+
+            vim.lsp.config("tsc_lsp", {
+                -- prefer the project's own tsc, else the one on PATH
+                cmd = function(dispatchers, config)
+                    local node_modules = config.root_dir and ts_node_modules(config.root_dir)
+                    local local_tsc = node_modules and node_modules .. "/.bin/tsc"
+                    local exe = local_tsc and vim.uv.fs_stat(local_tsc) and local_tsc or "tsc"
+                    return vim.lsp.rpc.start({ exe, "--lsp", "--stdio" }, dispatchers)
+                end,
+                filetypes = ts_filetypes,
+                root_dir = ts_root_dir(true),
+            })
+            vim.lsp.enable("tsc_lsp")
+
             if vim.fn.executable("typescript-language-server") == 1 then
-                vim.lsp.config("ts_ls", {})
+                vim.lsp.config("ts_ls", { root_dir = ts_root_dir(false) })
                 vim.lsp.enable("ts_ls")
             end
         end,
