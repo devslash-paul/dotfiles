@@ -427,7 +427,32 @@ do
         return nil
     end
 
+    -- Files open in the window the sidebar was opened from, else the largest file window in the tab
+    local function editor_window()
+        local function usable(win)
+            return win and vim.api.nvim_win_is_valid(win) and win ~= git_sidebar.win
+                and vim.api.nvim_win_get_tabpage(win) == vim.api.nvim_get_current_tabpage()
+                and vim.api.nvim_win_get_config(win).relative == ""
+                and vim.bo[vim.api.nvim_win_get_buf(win)].buftype == ""
+                and vim.bo[vim.api.nvim_win_get_buf(win)].filetype ~= "NvimTree"
+        end
+        if usable(git_sidebar.source_win) then return git_sidebar.source_win end
+        local best, best_area
+        for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+            local area = vim.api.nvim_win_get_width(win) * vim.api.nvim_win_get_height(win)
+            if usable(win) and (not best_area or area > best_area) then best, best_area = win, area end
+        end
+        return best
+    end
+
     local function open_file(path)
+        local target = editor_window()
+        if target then
+            vim.api.nvim_set_current_win(target)
+        elseif git_sidebar.win and vim.api.nvim_win_is_valid(git_sidebar.win) then
+            vim.api.nvim_set_current_win(git_sidebar.win)
+            vim.cmd("leftabove vnew")
+        end
         vim.cmd("edit " .. vim.fn.fnameescape(git_sidebar.root .. "/" .. path))
     end
 
@@ -498,6 +523,7 @@ do
         vim.bo[git_sidebar.buf].modifiable = false
         vim.bo[git_sidebar.buf].filetype = "git"
         if not git_sidebar.win or not vim.api.nvim_win_is_valid(git_sidebar.win) then
+            git_sidebar.source_win = vim.api.nvim_get_current_win()
             vim.cmd("botright 38vnew")
             git_sidebar.win = vim.api.nvim_get_current_win()
             vim.api.nvim_win_set_buf(git_sidebar.win, git_sidebar.buf)
