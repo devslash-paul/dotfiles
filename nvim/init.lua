@@ -454,8 +454,11 @@ do
     end
 
     local function refresh()
-        local file = vim.fn.expand("%:p")
-        local root = vim.fs.root(file ~= "" and file or vim.fn.getcwd(), { ".git" })
+        -- Terminal and plugin-pane buffers have no file path, and the cwd may be a removed worktree
+        local file = vim.bo.buftype == "" and vim.fn.expand("%:p") or ""
+        local cwd = vim.uv.cwd()
+        local start = (file:sub(1, 1) == "/" and file) or (cwd and vim.fn.isdirectory(cwd) == 1 and cwd)
+        local root = start and vim.fs.root(start, { ".git" })
         if not root then vim.notify("Not inside a Git repository", vim.log.levels.WARN); return end
         local pr = gh_pr(root)
         local base = branch_base(root, pr)
