@@ -115,6 +115,25 @@ vim.api.nvim_create_autocmd("FileType", {
 })
 
 -- Plugins
+local function agent_workspaces_available()
+    if vim.fn.executable("gh") == 1 then
+        local result = vim.system({
+            "gh", "repo", "view", "devslash-paul/agent-workspaces.nvim", "--json", "name",
+        }, { text = true }):wait()
+        if result.code == 0 then return true end
+    end
+
+    -- Fall back to the user's GitHub SSH access when gh is unavailable or unauthenticated.
+    if vim.fn.executable("git") ~= 1 then return false end
+    local result = vim.system({
+        "git", "ls-remote", "--exit-code", "git@github.com:devslash-paul/agent-workspaces.nvim.git", "HEAD",
+    }, {
+        text = true,
+        env = { GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5" },
+    }):wait()
+    return result.code == 0
+end
+
 require("lazy").setup({
     -- Colorscheme
     {
@@ -165,6 +184,22 @@ require("lazy").setup({
         keys = {
             { "<leader>e", "<cmd>NvimTreeToggle<CR>", desc = "Toggle file tree" },
             { "<leader>f", "<cmd>NvimTreeFindFile<CR>", desc = "Reveal current file" },
+        },
+    },
+
+    -- Claude Code / Codex conversations grouped by Git worktree, below nvim-tree.
+    -- The private GitHub repository is available to lazy.nvim via the configured gh auth.
+    {
+        url = "git@github.com:devslash-paul/agent-workspaces.nvim.git",
+        name = "agent-workspaces.nvim",
+        enabled = agent_workspaces_available(),
+        lazy = false,
+        config = function()
+            require("agent-workspaces").setup()
+        end,
+        keys = {
+            { "<leader>aw", "<cmd>AgentWorkspacesToggle<CR>", desc = "Toggle agent workspaces" },
+            { "<leader>ar", "<cmd>AgentWorkspacesRefresh<CR>", desc = "Refresh agent workspaces" },
         },
     },
 
@@ -359,3 +394,125 @@ vim.keymap.set("n", "<leader>tc", function()
         end
     end
 end, { desc = "Close test terminal" })
+
+-- Git branch files: a deliberately small, right-hand navigation sidebar.
+-- <leader>gf toggles it; / (or <CR>) fuzzy-finds its files.
+do
+    local git_sidebar = { win = nil, buf = nil, root = nil, files = {} }
+
+    local function lines(cmd, cwd)
+        local result = vim.system(cmd, { cwd = cwd, text = true }):wait()
+        if result.code ~= 0 then return {} end
+        return vim.split(vim.trim(result.stdout or ""), "\n", { trimempty = true })
+    end
+
+    local function gh_pr(root)
+        if vim.fn.executable("gh") ~= 1 then return nil end
+        local result = vim.system({
+            "gh", "pr", "view", "--json", "baseRefName,commits",
+        }, { cwd = root, text = true }):wait()
+        if result.code ~= 0 or not result.stdout or result.stdout == "" then return nil end
+        return vim.json.decode(result.stdout)
+    end
+
+    local function branch_base(root, pr)
+        if pr and pr.baseRefName then return pr.baseRefName end
+        local upstream = lines({ "git", "rev-parse", "--abbrev-ref", "@{upstream}" }, root)[1]
+        if upstream then return upstream end
+        for _, candidate in ipairs({ "main", "master", "origin/main", "origin/master" }) do
+            if #lines({ "git", "rev-parse", "--verify", candidate }, root) > 0 then
+                return candidate
+            end
+        end
+        return nil
+    end
+
+    local function open_file(path)
+        vim.cmd("edit " .. vim.fn.fnameescape(git_sidebar.root .. "/" .. path))
+    end
+
+    local function fuzzy_files()
+        if #git_sidebar.files == 0 then return end
+        require("telescope.pickers").new({}, {
+            prompt_title = "Branch files",
+            finder = require("telescope.finders").new_table({ results = git_sidebar.files }),
+            sorter = require("telescope.config").values.generic_sorter({}),
+            previewer = require("telescope.previewers").vim_buffer_cat.new({}),
+            attach_mappings = function(_, map)
+                local actions = require("telescope.actions")
+                local action_state = require("telescope.actions.state")
+                local function select()
+                    local entry = action_state.get_selected_entry()
+                    actions.close(_)
+                    if entry then open_file(entry[1] or entry.value) end
+                end
+                map("i", "<CR>", select)
+                map("n", "<CR>", select)
+                return true
+            end,
+        }):find()
+    end
+
+    local function refresh()
+        local file = vim.fn.expand("%:p")
+        local root = vim.fs.root(file ~= "" and file or vim.fn.getcwd(), { ".git" })
+        if not root then vim.notify("Not inside a Git repository", vim.log.levels.WARN); return end
+        local pr = gh_pr(root)
+        local base = branch_base(root, pr)
+        if not base then vim.notify("Could not determine branch base", vim.log.levels.WARN); return end
+
+        local diff = lines({ "git", "diff", "--name-status", base .. "...HEAD" }, root)
+        local files = {}
+        local display = { " BRANCH  " .. (lines({ "git", "branch", "--show-current" }, root)[1] or "HEAD"),
+            " BASE    " .. base, "" }
+        if pr and pr.commits and #pr.commits > 0 then
+            table.insert(display, " STACK / PR COMMITS")
+            for _, commit in ipairs(pr.commits) do
+                table.insert(display, string.format("   %s  %s", commit.oid:sub(1, 7), commit.messageHeadline))
+            end
+            table.insert(display, "")
+        end
+        table.insert(display, " CHANGED FILES")
+        for _, item in ipairs(diff) do
+            local path = item:match("^%S+%s+(.+)$") or item
+            table.insert(files, path)
+            table.insert(display, "   " .. item)
+        end
+        if #files == 0 then table.insert(display, "   (no changes since base)") end
+
+        git_sidebar.root, git_sidebar.files = root, files
+        if not git_sidebar.buf or not vim.api.nvim_buf_is_valid(git_sidebar.buf) then
+            git_sidebar.buf = vim.api.nvim_create_buf(false, true)
+            vim.bo[git_sidebar.buf].buftype = "nofile"
+            vim.bo[git_sidebar.buf].bufhidden = "wipe"
+            vim.bo[git_sidebar.buf].swapfile = false
+            vim.keymap.set("n", "<CR>", fuzzy_files, { buffer = git_sidebar.buf, desc = "Find branch file" })
+            vim.keymap.set("n", "/", fuzzy_files, { buffer = git_sidebar.buf, desc = "Fuzzy-find branch file" })
+            vim.keymap.set("n", "r", refresh, { buffer = git_sidebar.buf, desc = "Refresh branch files" })
+        end
+        vim.bo[git_sidebar.buf].modifiable = true
+        vim.api.nvim_buf_set_lines(git_sidebar.buf, 0, -1, false, display)
+        vim.bo[git_sidebar.buf].modifiable = false
+        vim.bo[git_sidebar.buf].filetype = "git"
+        if not git_sidebar.win or not vim.api.nvim_win_is_valid(git_sidebar.win) then
+            vim.cmd("botright 38vnew")
+            git_sidebar.win = vim.api.nvim_get_current_win()
+            vim.api.nvim_win_set_buf(git_sidebar.win, git_sidebar.buf)
+            vim.wo[git_sidebar.win].number = false
+            vim.wo[git_sidebar.win].relativenumber = false
+            vim.wo[git_sidebar.win].winfixwidth = true
+        end
+    end
+
+    vim.keymap.set("n", "<leader>gf", function()
+        if git_sidebar.win and vim.api.nvim_win_is_valid(git_sidebar.win) then
+            vim.api.nvim_win_close(git_sidebar.win, true)
+            git_sidebar.win = nil
+        else
+            refresh()
+        end
+    end, { desc = "Toggle branch files" })
+    vim.api.nvim_create_autocmd({ "FocusGained", "BufWritePost" }, { callback = function()
+        if git_sidebar.win and vim.api.nvim_win_is_valid(git_sidebar.win) then refresh() end
+    end })
+end
