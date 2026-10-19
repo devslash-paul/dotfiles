@@ -1,21 +1,143 @@
 #!/usr/bin/env bash
-# aw: talk to the agent-workspaces Neovim plugin from an agent running inside Neovim.
+# aw: coordinate Claude agents across git worktrees.
 #
+# Messages (files; work anywhere inside the repository):
+#   aw message <overseer|branch> <text...>      leave a message in that agent's inbox
+#   aw tell-overseer <text...>                  same as: aw message overseer <text...>
+#   aw wait <overseer|branch> [--now]           print and file unread messages; without --now,
+#                                               block until one arrives (run it in the background)
+#   aw inbox                                    unread count and listener for every inbox
+#
+# Agents (need $NVIM, which the agent-workspaces Neovim plugin sets in its terminals):
 #   aw status                                   list conversations as JSON
 #   aw spawn <worktree|branch|main> <brief.md> [title]
 #                                               start Claude there, told to carry out the brief
-#   aw message <conversation-id> <text...>      type a message into a running agent
-#   aw tell-overseer <text...>                  message the overseer
 #   aw remove <conversation-id|title>           stop and remove a conversation, as dd does
-#
-# Neovim sets $NVIM in its terminals, so this works from any agent started by the plugin.
 set -euo pipefail
 
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 [ $# -ge 1 ] || usage
+
+# --- Inboxes ----------------------------------------------------------------
+# Each repository keeps its inboxes in $AW_HOME/<repo>/inbox/<name>/, where <repo> is the
+# directory that holds the shared .git, so the main checkout and its worktrees agree on it.
+
+aw_home() { printf '%s\n' "${AW_HOME:-$HOME/.claude/overseer}"; }
+
+repo_name() {
+  local common
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
+    echo "aw: not inside a git repository" >&2; exit 2; }
+  basename "$(dirname "$common")"
+}
+
+slug() { printf '%s\n' "${1//\//--}"; }
+
+inbox_dir() { printf '%s/%s/inbox/%s\n' "$(aw_home)" "$(repo_name)" "$(slug "$1")"; }
+
+sender() {
+  if [ -n "${AW_FROM:-}" ]; then printf '%s\n' "$AW_FROM"; return; fi
+  git branch --show-current 2>/dev/null || echo unknown
+}
+
+send_message() {
+  local target="$1" text="$2" dir stamp tmp
+  [ -n "$text" ] || { echo "aw: message text is empty" >&2; exit 2; }
+  dir="$(inbox_dir "$target")"
+  mkdir -p "$dir"
+  stamp="$(date +%Y%m%dT%H%M%S)-$$-$RANDOM"
+  tmp="$dir/.$stamp.tmp"
+  printf 'From: %s\nAt: %s\n\n%s\n' "$(sender)" "$(date '+%Y-%m-%d %H:%M:%S %z')" "$text" > "$tmp"
+  mv "$tmp" "$dir/$stamp.md"
+  echo "Left a message for $target: $dir/$stamp.md"
+}
+
+# Prints every unread message, oldest first, and moves it to read/. Returns 1 if there were none.
+drain() {
+  local dir="$1" name="$2" found=1 file
+  mkdir -p "$dir/read"
+  for file in "$dir"/*.md; do
+    [ -e "$file" ] || continue
+    found=0
+    echo "=== Message $(basename "$file" .md) for $name"
+    cat "$file"
+    echo
+    mv "$file" "$dir/read/"
+  done
+  return "$found"
+}
+
+wait_messages() {
+  local name="$1" now="${2:-}" dir pidfile old
+  dir="$(inbox_dir "$name")"
+  mkdir -p "$dir/read"
+  if [ "$now" = "--now" ]; then
+    drain "$dir" "$name" || { echo "No unread messages for $name."; return 0; }
+    return 0
+  fi
+  # One listener per inbox, and the newest wins: a listener left behind by a cleared or closed
+  # session would otherwise take messages that nobody reads.
+  pidfile="$dir/.listener"
+  old="$(cat "$pidfile" 2>/dev/null || true)"
+  if [ -n "$old" ] && [ "$old" != "$$" ] && kill -0 "$old" 2>/dev/null; then kill "$old" 2>/dev/null || true; fi
+  echo "$$" > "$pidfile"
+  trap 'echo "REPLACED: another session now listens on inbox $name. Do not start aw wait again."; exit 0' TERM
+  trap '[ "$(cat "$pidfile" 2>/dev/null)" = "$$" ] && rm -f "$pidfile"' EXIT
+  while :; do
+    if drain "$dir" "$name"; then
+      echo "Act on these, then listen again: aw wait $name (as a background command)."
+      exit 0
+    fi
+    sleep 2 &
+    wait $! || true
+  done
+}
+
+list_inboxes() {
+  local root dir name unread pid listener
+  root="$(aw_home)/$(repo_name)/inbox"
+  [ -d "$root" ] || { echo "No inboxes yet."; return 0; }
+  printf '%-48s %-7s %s\n' INBOX UNREAD LISTENER
+  for dir in "$root"/*/; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    unread="$(find "$dir" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')"
+    pid="$(cat "$dir/.listener" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then listener="pid $pid"; else listener="none"; fi
+    printf '%-48s %-7s %s\n' "$name" "$unread" "$listener"
+  done
+}
+
+command="$1"
+shift
+case "$command" in
+  message)
+    [ $# -ge 2 ] || usage
+    target="$1"; shift
+    send_message "$target" "$*"
+    exit 0
+    ;;
+  tell-overseer)
+    [ $# -ge 1 ] || usage
+    send_message overseer "$*"
+    exit 0
+    ;;
+  wait)
+    [ $# -ge 1 ] || usage
+    wait_messages "$1" "${2:-}"
+    exit 0
+    ;;
+  inbox)
+    list_inboxes
+    exit 0
+    ;;
+esac
+
+# --- Agents, through the agent-workspaces plugin ------------------------------
+
 if [ -z "${NVIM:-}" ]; then
-  echo "aw: \$NVIM is not set. Run aw from an agent that Neovim started." >&2
+  echo "aw: \$NVIM is not set. Run aw $command from an agent that Neovim started." >&2
   exit 2
 fi
 
@@ -28,8 +150,6 @@ pairs = sys.argv[2:]
 json.dump(dict(zip(pairs[0::2], pairs[1::2])), open(sys.argv[1], "w"))' "$request" "$@"
 }
 
-command="$1"
-shift
 case "$command" in
   status)
     write_request op status
@@ -38,18 +158,8 @@ case "$command" in
     [ $# -ge 2 ] || usage
     brief="$(python3 -I -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$2")"
     [ -f "$brief" ] || { echo "aw: brief not found: $brief" >&2; exit 2; }
-    prompt="Read the brief at $brief and carry it out. When the work is done, run /handoff."
+    prompt="Run /reconnect so the overseer can message you. Then read the brief at $brief and carry it out. When the work is done, run /handoff."
     write_request op spawn workspace "$1" prompt "$prompt" title "${3:-$(basename "$brief" .md)}"
-    ;;
-  message)
-    [ $# -ge 2 ] || usage
-    id="$1"
-    shift
-    write_request op message id "$id" text "$*"
-    ;;
-  tell-overseer)
-    [ $# -ge 1 ] || usage
-    write_request op message id overseer text "$*"
     ;;
   remove)
     [ $# -eq 1 ] || usage

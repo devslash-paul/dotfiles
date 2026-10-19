@@ -22,11 +22,12 @@ one, in the words I used.
 
 Keep state in files so that `/clear` costs nothing. Everything lives in
 `~/.claude/overseer/<repo>/`, outside every repository, where `<repo>` is the base name of the main
-checkout (`basename "$(git rev-parse --show-toplevel)"`):
+checkout. `aw` works the name out the same way from any worktree.
 
 - `board.md`: the work in flight. You own it. Create it the first time you need it.
 - `briefs/<branch-slug>.md`: one per piece of work, which you write.
 - `handoffs/<branch-slug>.md`: written by the worker when it finishes or gets stuck.
+- `inbox/<name>/`: messages between agents, managed by `aw`. Yours is `inbox/overseer/`.
 
 `<branch-slug>` is the branch name with each `/` replaced by `--`. Workers read these files by
 absolute path, so they work from any worktree.
@@ -41,41 +42,53 @@ current as well as the board.
 
 ## Tools
 
-`aw` talks to the agent-workspaces plugin in the Neovim you run in. It needs `$NVIM`, which Neovim
-sets in its terminals.
+Messages between agents are files, so they work anywhere in the repository:
+
+```bash
+aw message <branch> "<text>"                # leave a message in a worker's inbox
+aw inbox                                    # unread count and listener for every inbox
+```
+
+`/reconnect` covers reading your own inbox and listening for new messages.
+
+The agent commands go through the agent-workspaces plugin in the Neovim you run in. They need
+`$NVIM`, which Neovim sets in its terminals.
 
 ```bash
 aw status                                   # every conversation: id, branch, path, running, status
 aw spawn <worktree|branch|main> <brief.md> [title]
-aw message <conversation-id> "<text>"       # types the text into a running agent and sends it
 aw remove <conversation-id|title>           # stops a conversation and removes it from the pane
 ```
 
+`aw spawn` tells the worker to run `/reconnect`, then carry out the brief, then run `/handoff`.
 `aw remove` works like `dd` in the pane: the provider's history, the worktree and the branch stay.
 It refuses a title that several conversations share, and it refuses the overseer.
 
-If `$NVIM` is not set, `aw` cannot reach the plugin. Print the command for me to run instead:
+If `$NVIM` is not set, the agent commands cannot reach the plugin. Print the command for me to run
+instead:
 
 ```bash
-cd <worktree> && claude "Read the brief at <brief path> and carry it out. When the work is done, run /handoff."
+cd <worktree> && claude "Run /reconnect so the overseer can message you. Then read the brief at <brief path> and carry it out. When the work is done, run /handoff."
 ```
 
 ## On start
 
 Orient yourself cheaply, then wait for me.
 
-1. Read `board.md` if it exists.
-2. Run `aw status`.
-3. Read every handoff that is newer than `board.md`, and fold it into the board.
-4. Report in a few lines: what is in flight, which workers are running, and any handoff that needs
+1. Run `/reconnect overseer`. It reads your unread messages and starts your listener.
+2. Read `board.md` if it exists.
+3. Run `aw status`.
+4. Read every handoff that is newer than `board.md`, and fold it into the board.
+5. Report in a few lines: what is in flight, which workers are running, and any handoff that needs
    a decision. If there is no board and no worker, say so in one line.
 
 Do not run `/whats-next`, query GitHub or read review threads on start.
 
 ## `status`
 
-Do the start steps, then check each board row against GitHub: PR state, checks, review decision and
-unresolved threads. If the board names a plan doc, run `/whats-next` against it instead, which
+Do the start steps, then run `aw inbox`. A running worker whose inbox has unread messages and no
+listener has lost its listener: tell me, since it will not hear you until it runs `/reconnect`. Then
+check each board row against GitHub: PR state, checks, review decision and unresolved threads. If the board names a plan doc, run `/whats-next` against it instead, which
 covers the same ground. Report one table with a row per piece of work, then the next steps, most
 urgent first.
 
@@ -105,13 +118,15 @@ urgent first.
 
 ## Messaging workers
 
-Message a worker when something it depends on changes: its base merged or moved, a review landed,
-or another worker finished something it needs. Keep a message to one or two sentences. If the
-detail runs longer, append it to the brief and say so in the message. Claude queues a message that
-reaches a busy worker and reads it at its next turn.
+Message a worker with `aw message <branch> "<text>"` when something it depends on changes: its base
+merged or moved, a review landed, or another worker finished something it needs. Keep a message to
+one or two sentences. If the detail runs longer, append it to the brief and say so in the message.
+The worker's listener wakes it between turns. A busy worker reads the message when its current turn
+ends.
 
-Workers report back with `/handoff`, which writes a handoff file and messages you. When a handoff
-arrives, read it, update the board, and tell me what changed and what is next.
+Workers report back with `/handoff`, which writes a handoff file and leaves you a message. Your
+listener wakes you with it. Read the handoff, update the board, and tell me what changed and what is
+next. Then start your listener again, as `/reconnect` describes.
 
 ## `train`
 

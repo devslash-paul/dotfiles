@@ -44,13 +44,14 @@ State facts. Do not repeat the brief.
 
 ## Step 4: Tell the overseer
 
-If `$NVIM` is set, send the overseer one line:
+Leave the overseer one line:
 
 ```bash
 aw tell-overseer "Handoff ready for <branch>: <status>. <handoff path>"
 ```
 
-If `aw` reports that no overseer is running, or `$NVIM` is not set, tell me the handoff path
-instead.
+This leaves a file in the overseer's inbox, and its listener wakes it. Tell me the handoff path as
+well, in one line.
 
-Then stop and wait. The overseer or I will send the next instruction.
+Then stop and wait. Keep your own listener running, as `/reconnect` describes, so the overseer can
+send the next instruction.
