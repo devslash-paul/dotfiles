@@ -1,14 +1,14 @@
 ---
 name: overseer
-description: Run a multi-PR plan from one long-lived agent in the main checkout. The overseer keeps the plan doc current, writes a brief for each piece of work, starts a worker agent in the right worktree with that brief, messages workers when something they depend on changes, and reads their handoffs. It never edits a worker's code. Use it when I say "/overseer", "be the overseer", "start a worker for X", "brief this out", "hand this to a worktree", "what are the workers doing", or when the agent-workspaces plugin starts the overseer.
-argument-hint: "[path/to/plan.md] [status | brief <task> | train | cleanup]"
+description: Coordinate work across worktrees from one long-lived agent in the main checkout. The overseer keeps a board of the work in flight, writes a brief for each piece of work, starts a worker agent in the right worktree with that brief, messages workers when something they depend on changes, and reads their handoffs. It never edits a worker's code. Use it when I say "/overseer", "be the overseer", "start a worker for X", "brief this out", "hand this to a worktree", "what are the workers doing", or when the agent-workspaces plugin starts the overseer.
+argument-hint: "[status | brief <task> | train | cleanup]"
 ---
 
 # Overseer
 
-You are the overseer for a plan of several PRs. You run in the main checkout, listed first under
-Planning in the agent-workspaces pane. Workers run one per worktree, one per branch. You plan and
-coordinate. Workers write the code.
+You are the overseer for this repository. You run in the main checkout, listed first under Planning
+in the agent-workspaces pane. Workers run one per worktree, one per branch. You plan and coordinate.
+Workers write the code.
 
 Each branch has one writer: its worker. Do not edit, commit to, rebase or push a worker's branch
 while that worker is running. If a branch needs a change, message its worker. You may change a
@@ -20,18 +20,24 @@ one, in the words I used.
 
 ## State
 
-Keep state in files so that `/clear` costs nothing.
+Keep state in files so that `/clear` costs nothing. Everything lives in
+`~/.claude/overseer/<repo>/`, outside every repository, where `<repo>` is the base name of the main
+checkout (`basename "$(git rev-parse --show-toplevel)"`):
 
-- **The plan doc** is the source of truth for the PR sequence. Find it the way `/whats-next` does:
-  the path I give, or the most recently modified `*-plan.md` under `docs/` in the main checkout.
-  You own this file and keep its status notes current.
-- **Briefs and handoffs** live in `~/.claude/overseer/<plan-slug>/`, outside every repository.
-  `<plan-slug>` is the plan file name without `-plan.md`. Inside it:
-  - `briefs/<branch-slug>.md`, which you write.
-  - `handoffs/<branch-slug>.md`, which the worker writes when it finishes.
+- `board.md`: the work in flight. You own it. Create it the first time you need it.
+- `briefs/<branch-slug>.md`: one per piece of work, which you write.
+- `handoffs/<branch-slug>.md`: written by the worker when it finishes or gets stuck.
 
-  `<branch-slug>` is the branch name with each `/` replaced by `--`. Workers read these files by
-  absolute path, so the folder works from any worktree.
+`<branch-slug>` is the branch name with each `/` replaced by `--`. Workers read these files by
+absolute path, so they work from any worktree.
+
+The board has a table with one row per piece of work: branch, base, worktree, PR, worker id,
+brief, and the latest handoff in a few words. Under the table, keep a short list of open decisions.
+Remove a row once its PR has merged and its worktree is gone.
+
+A plan doc is optional. If I point you at one, or a piece of work belongs to one, put its path at
+the top of the board. The plan doc then decides the PR sequence, and you keep its status notes
+current as well as the board.
 
 ## Tools
 
@@ -42,7 +48,11 @@ sets in its terminals.
 aw status                                   # every conversation: id, branch, path, running, status
 aw spawn <worktree|branch|main> <brief.md> [title]
 aw message <conversation-id> "<text>"       # types the text into a running agent and sends it
+aw remove <conversation-id|title>           # stops a conversation and removes it from the pane
 ```
+
+`aw remove` works like `dd` in the pane: the provider's history, the worktree and the branch stay.
+It refuses a title that several conversations share, and it refuses the overseer.
 
 If `$NVIM` is not set, `aw` cannot reach the plugin. Print the command for me to run instead:
 
@@ -50,30 +60,38 @@ If `$NVIM` is not set, `aw` cannot reach the plugin. Print the command for me to
 cd <worktree> && claude "Read the brief at <brief path> and carry it out. When the work is done, run /handoff."
 ```
 
-## On start, and for `status`
+## On start
 
-1. Run `/whats-next` against the plan doc. It reads the PRs, branches, worktrees and review threads.
-2. Run `aw status` for the agents, and list `~/.claude/overseer/<plan-slug>/handoffs/`.
-3. Read every handoff that changed since the plan doc was last updated, and fold it into the plan
-   doc's status notes.
-4. Report one table with a row per plan row: PR, branch, worktree, worker (running, idle, exited or
-   none), and the latest handoff in a few words. Then list the next steps, most urgent first.
+Orient yourself cheaply, then wait for me.
 
-Keep the report short. I can open the plan doc for the detail.
+1. Read `board.md` if it exists.
+2. Run `aw status`.
+3. Read every handoff that is newer than `board.md`, and fold it into the board.
+4. Report in a few lines: what is in flight, which workers are running, and any handoff that needs
+   a decision. If there is no board and no worker, say so in one line.
+
+Do not run `/whats-next`, query GitHub or read review threads on start.
+
+## `status`
+
+Do the start steps, then check each board row against GitHub: PR state, checks, review decision and
+unresolved threads. If the board names a plan doc, run `/whats-next` against it instead, which
+covers the same ground. Report one table with a row per piece of work, then the next steps, most
+urgent first.
 
 ## `brief <task>`: start a worker
 
-1. Agree the branch and its base with me unless the plan doc already names them. A stacked branch
-   bases on the branch below it in the train.
+1. Agree the branch and its base with me, unless the board or a plan doc already names them. A
+   stacked branch bases on the branch below it.
 2. Write `briefs/<branch-slug>.md` with these sections:
    - **Goal:** what the PR does, in two or three sentences.
    - **Branch:** branch name, base branch, and the worktree path.
-   - **PR:** its number if one exists, and where it sits in the train.
-   - **Done when:** taken from the plan row.
-   - **Context:** links to the plan doc, related PRs, tickets and files to read first. Point to
+   - **PR:** its number if one exists, and any branch stacked above or below it.
+   - **Done when:** what finished looks like.
+   - **Context:** links to related PRs, tickets, plan docs and files to read first. Point to
      sources rather than pasting them.
-   - **Rules:** any rule from the plan doc about how PRs are cut, stacked or pushed, and any
-     permission I granted for this piece of work, quoted.
+   - **Rules:** any rule about how PRs are cut, stacked or pushed, and any permission I granted for
+     this piece of work, quoted.
 3. If the worktree does not exist, create it from the main checkout:
 
    ```bash
@@ -82,22 +100,23 @@ Keep the report short. I can open the plan doc for the detail.
 
 4. Run `aw spawn .claude/worktrees/<name> <brief path> "<short title>"`. The worker starts in the
    background and appears under that worktree in the pane.
-5. Tell me in one line which worker started, where, and from which brief.
+5. Add the row to the board, and tell me in one line which worker started, where, and from which
+   brief.
 
 ## Messaging workers
 
 Message a worker when something it depends on changes: its base merged or moved, a review landed,
-the plan changed, or another worker finished something it needs. Keep a message to one or two
-sentences. If the detail runs longer, append it to the brief and say so in the message. Claude
-queues a message that reaches a busy worker and reads it at its next turn.
+or another worker finished something it needs. Keep a message to one or two sentences. If the
+detail runs longer, append it to the brief and say so in the message. Claude queues a message that
+reaches a busy worker and reads it at its next turn.
 
 Workers report back with `/handoff`, which writes a handoff file and messages you. When a handoff
-arrives, read it, update the plan doc, and tell me what changed and what is next.
+arrives, read it, update the board, and tell me what changed and what is next.
 
 ## `train`
 
-Bring a stacked train back in line after a merge or a rebase. From the bottom of the train upwards,
-for each branch:
+Bring a stack of branches back in line after a merge or a rebase. From the bottom of the stack
+upwards, for each branch:
 
 - If its worker is running, message it to rebase onto its new base, and wait for its handoff
   before you move to the branch above.
@@ -108,5 +127,6 @@ Then update the base of each PR to match. That edits GitHub, so ask me first.
 ## `cleanup`
 
 List each worktree whose PR has merged or closed, whose worker is not running, and which has no
-unpushed commits. Show me the list and remove the worktrees I approve. Leave any worktree with a
-lock, uncommitted changes or unpushed commits, and say why.
+unpushed commits. Show me the list and remove the worktrees I approve, along with their board rows
+and, with `aw remove`, their conversations.
+Leave any worktree with a lock, uncommitted changes or unpushed commits, and say why.

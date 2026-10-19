@@ -15,7 +15,7 @@ The prompt that started you names the brief's path. If you cannot find that prom
 `~/.claude/overseer/*/briefs/` for the file named after the current branch, with each `/` in the
 branch name replaced by `--`. If neither gives a brief, ask me where it is.
 
-The handoff file goes in the sibling folder: `.../<plan-slug>/handoffs/<branch-slug>.md`.
+The handoff file goes in the sibling folder: `.../<repo>/handoffs/<branch-slug>.md`.
 
 ## Step 2: Gather the facts
 
