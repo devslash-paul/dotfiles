@@ -23,6 +23,8 @@ The installer:
 - Creates symlinks for Neovim, tmux, zsh, and Ghostty config (Ghostty's macOS path is `~/Library/Application Support/com.mitchellh.ghostty/config.ghostty`, elsewhere `~/.config/ghostty/config`).
 - Backs up existing targets before replacing them, using `*.backup-YYYYMMDD-HHMMSS`.
 - Creates `~/.local/bin/vim -> nvim` pointing at the verified binary.
+- Links each Claude Code skill in `claude/skills/` to `~/.claude/skills/<name>`, one link per skill, so skills that exist only on this machine stay in place.
+- Links `claude/bin/aw` to `~/.local/bin/aw`. Agents started by the agent-workspaces Neovim plugin use it to list, start and message each other.
 
 ## Requirements
 

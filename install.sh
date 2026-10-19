@@ -280,7 +280,14 @@ else
   safe_link "$DOTFILES/ghostty/config" "$HOME/.config/ghostty/config"
 fi
 
+# Claude Code skills are linked one by one, so skills kept only on this machine stay in place.
+for skill in "$DOTFILES"/claude/skills/*/; do
+  skill="${skill%/}"
+  safe_link "$skill" "$HOME/.claude/skills/$(basename "$skill")"
+done
+
 mkdir -p "$HOME/.local/bin"
+safe_link "$DOTFILES/claude/bin/aw" "$HOME/.local/bin/aw"
 if command -v nvim >/dev/null 2>&1; then
   ln -sfn "$(command -v nvim)" "$HOME/.local/bin/vim"
   echo "  Linked: $HOME/.local/bin/vim -> $(command -v nvim)"

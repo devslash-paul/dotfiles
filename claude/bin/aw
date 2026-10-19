@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# aw: talk to the agent-workspaces Neovim plugin from an agent running inside Neovim.
+#
+#   aw status                                   list conversations as JSON
+#   aw spawn <worktree|branch|main> <brief.md> [title]
+#                                               start Claude there, told to carry out the brief
+#   aw message <conversation-id> <text...>      type a message into a running agent
+#   aw tell-overseer <text...>                  message the overseer
+#
+# Neovim sets $NVIM in its terminals, so this works from any agent started by the plugin.
+set -euo pipefail
+
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+[ $# -ge 1 ] || usage
+if [ -z "${NVIM:-}" ]; then
+  echo "aw: \$NVIM is not set. Run aw from an agent that Neovim started." >&2
+  exit 2
+fi
+
+request="$(mktemp -t aw.XXXXXX)"
+trap 'rm -f "$request"' EXIT
+
+write_request() {
+  python3 -I -c 'import json, sys
+pairs = sys.argv[2:]
+json.dump(dict(zip(pairs[0::2], pairs[1::2])), open(sys.argv[1], "w"))' "$request" "$@"
+}
+
+command="$1"
+shift
+case "$command" in
+  status)
+    write_request op status
+    ;;
+  spawn)
+    [ $# -ge 2 ] || usage
+    brief="$(python3 -I -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$2")"
+    [ -f "$brief" ] || { echo "aw: brief not found: $brief" >&2; exit 2; }
+    prompt="Read the brief at $brief and carry it out. When the work is done, run /handoff."
+    write_request op spawn workspace "$1" prompt "$prompt" title "${3:-$(basename "$brief" .md)}"
+    ;;
+  message)
+    [ $# -ge 2 ] || usage
+    id="$1"
+    shift
+    write_request op message id "$id" text "$*"
+    ;;
+  tell-overseer)
+    [ $# -ge 1 ] || usage
+    write_request op message id overseer text "$*"
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+response="$(nvim --server "$NVIM" --remote-expr "luaeval('require(\"agent-workspaces\").rpc(_A)', '$request')")"
+printf '%s\n' "$response" | python3 -I -c 'import json, sys
+data = json.load(sys.stdin)
+print(json.dumps(data, indent=2))
+sys.exit(0 if data.get("ok") else 1)'
