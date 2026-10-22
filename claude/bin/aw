@@ -8,7 +8,8 @@
 #                                               block until one arrives (run it in the background)
 #   aw inbox                                    unread count and listener for every inbox
 #
-# Agents (need $NVIM, which the agent-workspaces Neovim plugin sets in its terminals):
+# Agents (through the Neovim that has this repository open in agent-workspaces: $NVIM when the plugin
+# started this terminal, otherwise found among this user's Neovim servers):
 #   aw status                                   list conversations as JSON
 #   aw spawn <worktree|branch|main> <brief.md> [title]
 #                                               start Claude there, told to carry out the brief
@@ -135,10 +136,31 @@ case "$command" in
 esac
 
 # --- Agents, through the agent-workspaces plugin ------------------------------
+# The plugin answers in the Neovim whose pane shows this repository. Its terminals carry that server in
+# $NVIM, but Claude Code runs an interactive session's shell in a daemon process with a scrubbed
+# environment, so without $NVIM every Neovim server of this user is asked which repository it has loaded.
+
+find_nvim() {
+  local main dir sock loaded
+  main="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  main="$(cd "$(dirname "$main")" 2>/dev/null && pwd -P)" || return 1
+  for dir in "${TMPDIR:-}" "$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" /tmp; do
+    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    for sock in "$dir"/nvim."$(id -un)"/*/nvim.*.0; do
+      [ -S "$sock" ] || continue
+      loaded="$(nvim --server "$sock" --remote-expr 'luaeval("(function() local ok, aw = pcall(require, \"agent-workspaces\"); local repo = ok and aw.state and aw.state.repository; return repo and repo.main_path or \"\" end)()")' 2>/dev/null)" || continue
+      if [ "$loaded" = "$main" ]; then printf '%s\n' "$sock"; return 0; fi
+    done
+  done
+  return 1
+}
 
 if [ -z "${NVIM:-}" ]; then
-  echo "aw: \$NVIM is not set. Run aw $command from an agent that Neovim started." >&2
-  exit 2
+  NVIM="$(find_nvim)" || {
+    echo "aw: \$NVIM is not set and no Neovim has this repository open in agent-workspaces. Run aw $command from an agent that Neovim started, or open the repository in Neovim first." >&2
+    exit 2
+  }
+  export NVIM
 fi
 
 request="$(mktemp -t aw.XXXXXX)"
@@ -159,7 +181,7 @@ case "$command" in
     brief="$(python3 -I -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$2")"
     [ -f "$brief" ] || { echo "aw: brief not found: $brief" >&2; exit 2; }
     prompt="Run /reconnect so the overseer can message you. Then read the brief at $brief and carry it out. When the work is done, run /handoff."
-    write_request op spawn workspace "$1" prompt "$prompt" title "${3:-$(basename "$brief" .md)}"
+    write_request op spawn workspace "$1" prompt "$prompt" title "${3:-$(basename "$brief" .md)}" brief "$brief"
     ;;
   remove)
     [ $# -eq 1 ] || usage
