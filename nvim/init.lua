@@ -162,17 +162,23 @@ require("lazy").setup({
             { "<leader>fb", function() require("telescope.builtin").buffers() end, desc = "Open buffers" },
             { "<leader>fd", function() require("telescope.builtin").diagnostics({ bufnr = 0 }) end, desc = "Diagnostics in file" },
             { "<leader>fD", function() require("telescope.builtin").diagnostics() end, desc = "Diagnostics in workspace" },
-            -- IntelliJ's file-structure popup: classes and methods only, fuzzy, jump on <CR>
+            -- IntelliJ's file-structure popup: aerial's tree in file order, members indented under their type
             {
                 "<leader>fs",
                 function()
-                    require("telescope.builtin").lsp_document_symbols({
-                        symbols = { "class", "interface", "enum", "struct", "method", "function", "constructor" },
-                        symbol_width = 50,
-                        show_line = false,
+                    require("aerial")
+                    local telescope = require("telescope")
+                    telescope.load_extension("aerial")
+                    telescope.extensions.aerial.aerial({
+                        show_columns = "symbols",
+                        sorting_strategy = "ascending",
+                        layout_config = { prompt_position = "top" },
+                        get_entry_text = function(item)
+                            return string.rep("    ", item.level or 0) .. item.name
+                        end,
                     })
                 end,
-                desc = "Classes and methods in file",
+                desc = "Structure of file",
             },
             { "<leader>fS", function() require("telescope.builtin").lsp_document_symbols() end, desc = "All symbols in file" },
             { "<leader>fw", function() require("telescope.builtin").lsp_dynamic_workspace_symbols() end, desc = "Symbols in project" },
@@ -336,6 +342,19 @@ require("lazy").setup({
             require("aerial").setup({
                 layout = { min_width = 30 },
                 attach_mode = "global",
+                -- Keep top-level symbols and members of a type. Nothing from inside a function, method,
+                -- variable or property body, and no anonymous callbacks.
+                post_parse_symbol = function(_, item)
+                    if item.name == "<function>" or item.name:match("callback$") then
+                        return false
+                    end
+                    local parent = item.parent
+                    if not parent then
+                        return true
+                    end
+                    local containers = { Class = true, Interface = true, Struct = true, Enum = true, Module = true, Namespace = true }
+                    return containers[parent.kind] == true
+                end,
             })
         end,
         keys = {
