@@ -160,7 +160,8 @@ require("lazy").setup({
             { "<C-p>", function() require("telescope.builtin").find_files() end, desc = "Find file" },
             { "<leader>fg", function() require("telescope.builtin").live_grep() end, desc = "Search in files" },
             { "<leader>fb", function() require("telescope.builtin").buffers() end, desc = "Open buffers" },
-            { "<leader>fd", function() require("telescope.builtin").diagnostics() end, desc = "LSP diagnostics" },
+            { "<leader>fd", function() require("telescope.builtin").diagnostics({ bufnr = 0 }) end, desc = "Diagnostics in file" },
+            { "<leader>fD", function() require("telescope.builtin").diagnostics() end, desc = "Diagnostics in workspace" },
             -- IntelliJ's file-structure popup: classes and methods only, fuzzy, jump on <CR>
             {
                 "<leader>fs",
