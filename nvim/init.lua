@@ -334,6 +334,21 @@ require("lazy").setup({
 -- Completion: on request only (<C-Space>), never automatic
 vim.opt.completeopt = { "menu", "menuone", "noselect", "fuzzy", "popup" }
 vim.opt.pumheight = 12
+vim.opt.pumwidth = 32
+vim.opt.pumborder = "rounded"
+vim.opt.winborder = "rounded"
+
+-- Menu and its docs window sit on their own darker surface so they don't bleed into code
+local function popup_colours()
+    vim.api.nvim_set_hl(0, "Pmenu", { bg = "#16161e", fg = "#c0caf5" })
+    vim.api.nvim_set_hl(0, "PmenuSel", { bg = "#283457", bold = true })
+    vim.api.nvim_set_hl(0, "PmenuBorder", { bg = "#16161e", fg = "#3b4261" })
+    vim.api.nvim_set_hl(0, "PmenuExtra", { bg = "#16161e", fg = "#565f89" })
+    vim.api.nvim_set_hl(0, "NormalFloat", { bg = "#16161e" })
+    vim.api.nvim_set_hl(0, "FloatBorder", { bg = "#16161e", fg = "#3b4261" })
+end
+popup_colours()
+vim.api.nvim_create_autocmd("ColorScheme", { callback = popup_colours })
 
 local function pum_or(key, fallback)
     return function()
@@ -588,3 +603,15 @@ do
         if git_sidebar.win and vim.api.nvim_win_is_valid(git_sidebar.win) then refresh() end
     end })
 end
+
+vim.keymap.set("n", "<leader>z", function()
+    local restore = vim.t.zoom_restore
+    if restore then
+        vim.t.zoom_restore = nil
+        vim.cmd(restore)
+        return
+    end
+    vim.t.zoom_restore = vim.fn.winrestcmd()
+    vim.cmd("wincmd |")
+    vim.cmd("wincmd _")
+end, { desc = "Toggle zoom on the current split" })
