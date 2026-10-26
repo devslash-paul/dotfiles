@@ -161,7 +161,19 @@ require("lazy").setup({
             { "<leader>fg", function() require("telescope.builtin").live_grep() end, desc = "Search in files" },
             { "<leader>fb", function() require("telescope.builtin").buffers() end, desc = "Open buffers" },
             { "<leader>fd", function() require("telescope.builtin").diagnostics() end, desc = "LSP diagnostics" },
-            { "<leader>fs", function() require("telescope.builtin").lsp_document_symbols() end, desc = "Symbols in file" },
+            -- IntelliJ's file-structure popup: classes and methods only, fuzzy, jump on <CR>
+            {
+                "<leader>fs",
+                function()
+                    require("telescope.builtin").lsp_document_symbols({
+                        symbols = { "class", "interface", "enum", "struct", "method", "function", "constructor" },
+                        symbol_width = 50,
+                        show_line = false,
+                    })
+                end,
+                desc = "Classes and methods in file",
+            },
+            { "<leader>fS", function() require("telescope.builtin").lsp_document_symbols() end, desc = "All symbols in file" },
             { "<leader>fw", function() require("telescope.builtin").lsp_dynamic_workspace_symbols() end, desc = "Symbols in project" },
         },
     },
