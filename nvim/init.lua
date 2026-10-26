@@ -36,6 +36,9 @@ vim.opt.incsearch = true
 vim.opt.splitbelow = true
 vim.opt.splitright = true
 
+-- Terminal: one key out of a Claude Code pane. <Esc> stays with the program inside.
+vim.keymap.set("t", "<C->>", "<C-\\><C-n>", { desc = "Leave terminal mode" })
+
 -- Treesitter (built-in since nvim 0.10)
 vim.api.nvim_create_autocmd("FileType", {
     pattern = "*",
