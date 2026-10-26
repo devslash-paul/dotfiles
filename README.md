@@ -33,7 +33,9 @@ Minimum:
 
 Recommended for full Neovim behavior:
 - `ripgrep` (used by Telescope `live_grep`)
-- `rust-analyzer` (configured LSP server)
+- LSP servers, installed by the installer when their manager is present: `typescript` and `pyright` via npm, `ruff` via uv, `rust-analyzer` via rustup (`brew install rustup && rustup-init` first)
+
+Completion is on request only: `<C-Space>` in insert mode opens the LSP menu, `<Tab>`/`<S-Tab>` move, `<CR>` accepts.
 
 Optional shell tooling (auto-detected when present):
 - asdf

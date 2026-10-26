@@ -197,7 +197,19 @@ require("lazy").setup({
         enabled = agent_workspaces_available(),
         lazy = false,
         config = function()
-            require("agent-workspaces").setup()
+            require("agent-workspaces").setup({
+                -- A worker silent for three hours is sent /handoff and stopped; the overseer respawns it.
+                retire_after = { worker = 3 * 60 * 60 },
+                providers = {
+                    claude = {
+                        -- Pinned per role, so changing the default model in Claude Code moves neither.
+                        role_args = {
+                            overseer = { "--model", "claude-fable-5-1" },
+                            worker = { "--model", "claude-opus-5-5" },
+                        },
+                    },
+                },
+            })
         end,
         keys = {
             { "<leader>aw", "<cmd>AgentWorkspacesToggle<CR>", desc = "Toggle agent workspaces" },
@@ -278,6 +290,13 @@ require("lazy").setup({
                 vim.lsp.config("ts_ls", { root_dir = ts_root_dir(false) })
                 vim.lsp.enable("ts_ls")
             end
+
+            if vim.fn.executable("pyright-langserver") == 1 then
+                vim.lsp.enable("pyright")
+            end
+            if vim.fn.executable("ruff") == 1 then
+                vim.lsp.enable("ruff")
+            end
         end,
     },
 
@@ -312,10 +331,32 @@ require("lazy").setup({
     },
 })
 
+-- Completion: on request only (<C-Space>), never automatic
+vim.opt.completeopt = { "menu", "menuone", "noselect", "fuzzy", "popup" }
+vim.opt.pumheight = 12
+
+local function pum_or(key, fallback)
+    return function()
+        if vim.fn.pumvisible() == 1 then
+            return key
+        end
+        return fallback
+    end
+end
+
 -- LSP keybindings (active when an LSP server attaches)
 vim.api.nvim_create_autocmd("LspAttach", {
     callback = function(args)
         local opts = { buffer = args.buf }
+        local client = vim.lsp.get_client_by_id(args.data.client_id)
+        if client and client:supports_method("textDocument/completion") then
+            vim.lsp.completion.enable(true, client.id, args.buf, { autotrigger = false })
+            vim.keymap.set("i", "<C-Space>", vim.lsp.completion.get, opts)
+            local expr = { buffer = args.buf, expr = true }
+            vim.keymap.set("i", "<Tab>", pum_or("<C-n>", "<Tab>"), expr)
+            vim.keymap.set("i", "<S-Tab>", pum_or("<C-p>", "<S-Tab>"), expr)
+            vim.keymap.set("i", "<CR>", pum_or("<C-y>", "<CR>"), expr)
+        end
         vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)        -- go to definition
         vim.keymap.set("n", "K", hover_with_definition, opts)              -- hover docs
         vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)    -- rename symbol

@@ -261,12 +261,43 @@ ensure_default_shell_is_zsh() {
   fi
 }
 
+# Language servers for nvim, installed only when their manager is present.
+ensure_lsp_servers() {
+  if command -v npm >/dev/null 2>&1; then
+    if ! command -v tsc >/dev/null 2>&1; then
+      npm install -g typescript typescript-language-server
+    fi
+    if ! command -v pyright-langserver >/dev/null 2>&1; then
+      npm install -g pyright
+    fi
+  else
+    echo "  Skipped TypeScript/pyright servers (npm not found)"
+  fi
+
+  if command -v uv >/dev/null 2>&1; then
+    if ! command -v ruff >/dev/null 2>&1; then
+      uv tool install ruff
+    fi
+  else
+    echo "  Skipped ruff (uv not found)"
+  fi
+
+  if command -v rustup >/dev/null 2>&1; then
+    if ! command -v rust-analyzer >/dev/null 2>&1; then
+      rustup component add rust-analyzer
+    fi
+  else
+    echo "  Skipped rust-analyzer (rustup not found; brew install rustup && rustup-init)"
+  fi
+}
+
 echo "Installing dotfiles from $DOTFILES"
 
 ensure_command git git
 ensure_command zsh zsh
 ensure_command tmux tmux
 ensure_nvim
+ensure_lsp_servers
 install_oh_my_zsh
 ensure_default_shell_is_zsh
 
