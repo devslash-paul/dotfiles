@@ -20,11 +20,7 @@ typeset -U path PATH
 export PATH="$HOME/.local/bin:$PATH"
 
 # ASDF (Homebrew on macOS or user install)
-if [ -f "/opt/homebrew/opt/asdf/libexec/asdf.sh" ]; then
-  . "/opt/homebrew/opt/asdf/libexec/asdf.sh"
-elif [ -f "$HOME/.asdf/asdf.sh" ]; then
-  . "$HOME/.asdf/asdf.sh"
-fi
+export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
 
 # LM Studio CLI (lms)
 [ -d "$HOME/.lmstudio/bin" ] && export PATH="$PATH:$HOME/.lmstudio/bin"
