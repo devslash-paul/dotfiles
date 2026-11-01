@@ -1,6 +1,7 @@
 {
   "aerial.nvim": { "branch": "master", "commit": "28fe6e822ae344544c379d60fcb13c9519a1f08a" },
   "agent-workspaces.nvim": { "branch": "master", "commit": "4bdf034cf47b6e7ce9665597301d81a6c10a3d60" },
+  "goyo.vim": { "branch": "master", "commit": "9c72fdf2d202914318581f9f0dd09fd102f8504d" },
   "lazy.nvim": { "branch": "main", "commit": "306a05526ada86a7b30af95c5cc81ffba93fef97" },
   "nvim-lspconfig": { "branch": "master", "commit": "45a3a444b710511c39abca3b60bb6e23a21e3de5" },
   "nvim-tree.lua": { "branch": "master", "commit": "355bcc85a48f45b3e728219f10b880d569928965" },

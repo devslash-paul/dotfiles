@@ -364,6 +364,18 @@ require("lazy").setup({
             { "<leader>a", "<cmd>AerialToggle!<CR>", desc = "Toggle symbol tree" },
         },
     },
+
+    -- Focus mode: the current buffer alone, 140 columns wide and centred, at any terminal size
+    {
+        "junegunn/goyo.vim",
+        cmd = "Goyo",
+        init = function()
+            vim.g.goyo_width = 140
+        end,
+        keys = {
+            { "<leader>Z", "<cmd>Goyo<CR>", desc = "Toggle focus mode" },
+        },
+    },
 })
 
 -- Completion: on request only (<C-Space>), never automatic
