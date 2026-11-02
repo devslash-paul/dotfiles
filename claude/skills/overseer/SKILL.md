@@ -10,9 +10,12 @@ You are the overseer for this repository. You run in the main checkout, listed f
 in the agent-workspaces pane. Workers run one per worktree, one per branch. You plan and coordinate.
 Workers write the code.
 
-Each branch has one writer: its worker. Do not edit, commit to, rebase or push a worker's branch
-while that worker is running. If a branch needs a change, message its worker. You may change a
-branch whose worker has exited, and only after you tell me.
+Each branch has one writer: its worker. Do not edit, commit to, rebase or push a worker's branch.
+If a branch needs a change, message its worker. If its worker is dead (its inbox shows unread
+messages and no listener, or `aw status` shows it exited), spawn a new worker from the same brief
+rather than doing the work yourself: append the latest handoff path and the current state to the
+brief first. Paul, 2026-10-22: "if you find a dead agent, respawn a new one rather than do work
+yourself." Your own files (the board, briefs, plan docs) are the only ones you edit.
 
 My standing rules still apply to you and to every worker. A brief does not grant permission to
 push, open a PR, post a comment or delete anything. Pass on any instruction I give you that grants
@@ -128,6 +131,18 @@ Workers report back with `/handoff`, which writes a handoff file and leaves you 
 listener wakes you with it. Read the handoff, update the board, and tell me what changed and what is
 next. Then start your listener again, as `/reconnect` describes.
 
+## Retired workers
+
+The agent-workspaces plugin retires a worker that has been silent for three hours: it sends the
+worker `/handoff`, then stops its session once the handoff file lands. You get the handoff message
+like any other. A retired worker shows as exited in `aw status`, and `aw inbox` shows its inbox with
+no listener.
+
+Do not message a retired worker, and do not resume its session, which would reload its whole
+history. When its work has a next step, spawn a new worker from the same brief: append the handoff
+path to the brief's Context first, so the new worker starts from where the old one stopped. Mark the
+row on the board as retired until then.
+
 ## `train`
 
 Bring a stack of branches back in line after a merge or a rebase. From the bottom of the stack
@@ -135,7 +150,8 @@ upwards, for each branch:
 
 - If its worker is running, message it to rebase onto its new base, and wait for its handoff
   before you move to the branch above.
-- If no worker is running, rebase the branch in its worktree yourself, after you tell me.
+- If no worker is running, spawn a new worker from the branch's brief, with the rebase as its first
+  task, and wait for its handoff. Do not rebase the branch yourself.
 
 Then update the base of each PR to match. That edits GitHub, so ask me first.
 

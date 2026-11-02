@@ -304,6 +304,7 @@ ensure_default_shell_is_zsh
 safe_link "$DOTFILES/nvim" "$HOME/.config/nvim"
 safe_link "$DOTFILES/tmux/tmux.conf" "$HOME/.tmux.conf"
 safe_link "$DOTFILES/zsh/zshrc" "$HOME/.zshrc"
+safe_link "$DOTFILES/rex/init.lua" "$HOME/.config/rex/init.lua"
 
 if [ "$(uname -s)" = "Darwin" ]; then
   safe_link "$DOTFILES/ghostty/config" "$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty"

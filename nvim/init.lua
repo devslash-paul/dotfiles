@@ -36,8 +36,29 @@ vim.opt.incsearch = true
 vim.opt.splitbelow = true
 vim.opt.splitright = true
 
+-- Reload buffers an agent in a terminal pane has changed on disk. Focus never leaves Neovim then, so
+-- checktime runs on a timer and on cursor and terminal events, not only on FocusGained.
+vim.opt.autoread = true
+vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "CursorHold", "CursorHoldI", "TermLeave", "TermClose" }, {
+    callback = function()
+        if vim.fn.getcmdwintype() == "" then
+            vim.cmd.checktime()
+        end
+    end,
+})
+vim.uv.new_timer():start(1000, 1000, vim.schedule_wrap(function()
+    if vim.fn.mode() ~= "c" and vim.fn.getcmdwintype() == "" then
+        vim.cmd.checktime()
+    end
+end))
+vim.api.nvim_create_autocmd("FileChangedShellPost", {
+    callback = function(args)
+        vim.notify("Reloaded " .. vim.fn.fnamemodify(args.file, ":~:."), vim.log.levels.INFO)
+    end,
+})
+
 -- Terminal: one key out of a Claude Code pane. <Esc> stays with the program inside.
-vim.keymap.set("t", "<C->>", "<C-\\><C-n>", { desc = "Leave terminal mode" })
+vim.keymap.set("t", "<C-p>", "<C-\\><C-n>", { desc = "Leave terminal mode" })
 
 -- Treesitter (built-in since nvim 0.10)
 vim.api.nvim_create_autocmd("FileType", {
@@ -117,6 +138,47 @@ vim.api.nvim_create_autocmd("FileType", {
     end,
 })
 
+-- The files under the cwd for Telescope, with the most recently used buffers first
+function RecentThenAllFiles()
+    local cwd = vim.uv.cwd()
+    local current = vim.api.nvim_get_current_buf()
+    local seen = {}
+    local results = {}
+    local function add(path)
+        if not seen[path] then
+            seen[path] = true
+            table.insert(results, path)
+        end
+    end
+
+    local buffers = vim.fn.getbufinfo({ buflisted = 1 })
+    table.sort(buffers, function(a, b) return a.lastused > b.lastused end)
+    local recent = 0
+    for _, buffer in ipairs(buffers) do
+        local usable = buffer.bufnr ~= current and buffer.name ~= "" and vim.bo[buffer.bufnr].buftype == ""
+        if usable and recent < 10 then
+            add(vim.fs.relpath(cwd, buffer.name) or buffer.name)
+            recent = recent + 1
+        end
+    end
+
+    local listing = vim.system({ "rg", "--files" }, { cwd = cwd, text = true }):wait()
+    for _, path in ipairs(vim.split(listing.stdout or "", "\n", { trimempty = true })) do
+        add(path)
+    end
+
+    local config = require("telescope.config").values
+    require("telescope.pickers").new({}, {
+        prompt_title = "Find file",
+        finder = require("telescope.finders").new_table({
+            results = results,
+            entry_maker = require("telescope.make_entry").gen_from_file({ cwd = cwd }),
+        }),
+        sorter = config.file_sorter({}),
+        previewer = config.file_previewer({}),
+    }):find()
+end
+
 -- Plugins
 local function agent_workspaces_available()
     if vim.fn.executable("gh") == 1 then
@@ -160,7 +222,9 @@ require("lazy").setup({
             })
         end,
         keys = {
-            { "<C-p>", function() require("telescope.builtin").find_files() end, desc = "Find file" },
+            -- Recent buffers first, most recent nearest the prompt, then every file: up and down walk the recent
+            -- files before any typing, and typing fuzzes over all of them
+            { "<C-p>", function() RecentThenAllFiles() end, desc = "Find file" },
             { "<leader>fg", function() require("telescope.builtin").live_grep() end, desc = "Search in files" },
             { "<leader>fb", function() require("telescope.builtin").buffers() end, desc = "Open buffers" },
             { "<leader>fd", function() require("telescope.builtin").diagnostics({ bufnr = 0 }) end, desc = "Diagnostics in file" },
@@ -185,6 +249,8 @@ require("lazy").setup({
             },
             { "<leader>fS", function() require("telescope.builtin").lsp_document_symbols() end, desc = "All symbols in file" },
             { "<leader>fw", function() require("telescope.builtin").lsp_dynamic_workspace_symbols() end, desc = "Symbols in project" },
+            -- Replaces Neovim's built-in grr, which fills the quickfix pane
+            { "grr", function() require("telescope.builtin").lsp_references({ include_declaration = false }) end, desc = "References" },
         },
     },
 
@@ -198,6 +264,7 @@ require("lazy").setup({
             require("nvim-tree").setup({
                 -- Wide enough for the agent-workspaces pane's branch names and conversation titles
                 view = { width = 52 },
+                update_focused_file = { enable = true },
                 actions = {
                     open_file = {
                         resize_window = false,
@@ -288,9 +355,58 @@ require("lazy").setup({
             -- attach only when the project's TypeScript matches this server
             local function ts_root_dir(native)
                 return function(bufnr, on_dir)
-                    local root = vim.fs.root(bufnr, ts_roots)
+                    -- one server per monorepo, so references reach the packages that import this one
+                    local root = vim.fs.root(bufnr, { "pnpm-workspace.yaml", ts_roots })
                     if root and (ts_major(root) >= 7) == native then
                         on_dir(root)
+                    end
+                end
+            end
+
+            -- tsserver searches only the projects it has loaded, and loads one when a file of it opens. The repo's
+            -- <git common dir>/nvim-ts-projects names packages, one per line, for the main checkout and every worktree;
+            -- one source file of each is opened at start, so references reach them without a buffer open.
+            local function load_named_projects(client)
+                local root = client.root_dir
+                if not root then
+                    return
+                end
+                local common = vim.trim(vim.system({ "git", "-C", root, "rev-parse", "--path-format=absolute",
+                    "--git-common-dir" }, { text = true }):wait().stdout or "")
+                local list = common .. "/nvim-ts-projects"
+                if common == "" or not vim.uv.fs_stat(list) then
+                    return
+                end
+                local wanted = {}
+                for _, line in ipairs(vim.fn.readfile(list)) do
+                    local name = vim.trim(line:gsub("#.*", ""))
+                    if name ~= "" then
+                        wanted[name] = true
+                    end
+                end
+                local files = vim.system({ "git", "-C", root, "ls-files", "--", "*package.json", "*.ts", "*.tsx" },
+                    { text = true }):wait().stdout or ""
+                local paths = vim.split(files, "\n", { trimempty = true })
+                for _, manifest in ipairs(paths) do
+                    if manifest:match("package%.json$") then
+                        local ok, pkg = pcall(vim.json.decode, table.concat(vim.fn.readfile(root .. "/" .. manifest), "\n"))
+                        if ok and wanted[pkg.name] then
+                            local src = vim.fs.dirname(manifest) .. "/src/"
+                            for _, path in ipairs(paths) do
+                                if vim.startswith(path, src) and path:match("%.tsx?$") and not path:match("%.d%.ts$") then
+                                    local file = root .. "/" .. path
+                                    client:notify("textDocument/didOpen", {
+                                        textDocument = {
+                                            uri = vim.uri_from_fname(file),
+                                            languageId = path:match("%.tsx$") and "typescriptreact" or "typescript",
+                                            version = 0,
+                                            text = table.concat(vim.fn.readfile(file), "\n"),
+                                        },
+                                    })
+                                    break
+                                end
+                            end
+                        end
                     end
                 end
             end
@@ -309,11 +425,57 @@ require("lazy").setup({
             vim.lsp.enable("tsc_lsp")
 
             if vim.fn.executable("typescript-language-server") == 1 then
-                vim.lsp.config("ts_ls", { root_dir = ts_root_dir(false) })
+                vim.lsp.config("ts_ls", { root_dir = ts_root_dir(false), on_init = load_named_projects })
                 vim.lsp.enable("ts_ls")
             end
 
+            -- Packages that import a library read it through its built declarations, so references and types across
+            -- packages go stale as its source moves. Rebuild a declaration-emitting package on save, one build at a time.
+            local declaration_builds = {}
+            local function rebuild_declarations(dir)
+                local build = declaration_builds[dir]
+                if build then
+                    build.again = true
+                    return
+                end
+                declaration_builds[dir] = { again = false }
+                local node_modules = ts_node_modules(dir)
+                local tsc = node_modules and node_modules .. "/.bin/tsc" or "tsc"
+                -- A failed build is not reported: the server already shows the same errors as diagnostics,
+                -- and a package mid-edit fails to build on most saves.
+                vim.system({ tsc, "-p", dir }, { text = true }, vim.schedule_wrap(function()
+                    local again = declaration_builds[dir].again
+                    declaration_builds[dir] = nil
+                    if again then
+                        rebuild_declarations(dir)
+                    end
+                end))
+            end
+            vim.api.nvim_create_autocmd("BufWritePost", {
+                pattern = { "*.ts", "*.tsx" },
+                callback = function(args)
+                    if args.file:match("%.spec%.tsx?$") then
+                        return
+                    end
+                    local dir = vim.fs.root(args.buf, "tsconfig.json")
+                    local config = dir and table.concat(vim.fn.readfile(dir .. "/tsconfig.json"), "\n") or ""
+                    if config:match('"declaration"%s*:%s*true') then
+                        rebuild_declarations(dir)
+                    end
+                end,
+            })
+
             if vim.fn.executable("pyright-langserver") == 1 then
+                -- pyright resolves imports against the python on PATH; use the project's uv venv instead
+                vim.lsp.config("pyright", {
+                    before_init = function(_, config)
+                        local python = config.root_dir and config.root_dir .. "/.venv/bin/python"
+                        if python and vim.uv.fs_stat(python) then
+                            config.settings.python = vim.tbl_extend("force", config.settings.python or {},
+                                { pythonPath = python })
+                        end
+                    end,
+                })
                 vim.lsp.enable("pyright")
             end
             if vim.fn.executable("ruff") == 1 then
@@ -341,10 +503,14 @@ require("lazy").setup({
     -- Symbol tree (like IntelliJ's Structure view)
     {
         "stevearc/aerial.nvim",
+        lazy = false,
         config = function()
             require("aerial").setup({
-                layout = { min_width = 30 },
+                layout = { min_width = 30, default_direction = "right", placement = "edge" },
                 attach_mode = "global",
+                open_automatic = true,
+                -- aerial's default kinds, plus Variable: the TypeScript server reports a type alias as a variable
+                filter_kind = { "Class", "Constructor", "Enum", "Function", "Interface", "Module", "Method", "Struct", "Variable" },
                 -- Keep top-level symbols and members of a type. Nothing from inside a function, method,
                 -- variable or property body, and no anonymous callbacks.
                 post_parse_symbol = function(_, item)
@@ -419,11 +585,21 @@ vim.api.nvim_create_autocmd("LspAttach", {
             vim.keymap.set("i", "<S-Tab>", pum_or("<C-p>", "<S-Tab>"), expr)
             vim.keymap.set("i", "<CR>", pum_or("<C-y>", "<CR>"), expr)
         end
-        vim.keymap.set("n", "gd", vim.lsp.buf.definition, opts)        -- go to definition
+        -- Jumps when there is one definition; picks in a popup, as grr does, when there are several
+        vim.keymap.set("n", "gd", function() require("telescope.builtin").lsp_definitions() end, opts)
         vim.keymap.set("n", "K", hover_with_definition, opts)              -- hover docs
         vim.keymap.set("n", "<leader>rn", vim.lsp.buf.rename, opts)    -- rename symbol
         vim.keymap.set("n", "<leader>ca", vim.lsp.buf.code_action, opts)
-        vim.keymap.set("n", "gl", vim.diagnostic.open_float, opts)        -- show diagnostic under cursor
+        -- Diagnostics on the cursor line, else every diagnostic in the buffer: a parse error mid-edit often lands
+        -- on the line after the one being typed, which an unscoped open_float would show as nothing.
+        vim.keymap.set("n", "gl", function()
+            local line = vim.api.nvim_win_get_cursor(0)[1] - 1
+            if #vim.diagnostic.get(0, { lnum = line }) > 0 then
+                vim.diagnostic.open_float()
+            else
+                vim.diagnostic.open_float({ scope = "buffer" })
+            end
+        end, opts)
         vim.keymap.set("n", "[d", vim.diagnostic.goto_prev, opts)         -- previous diagnostic
         vim.keymap.set("n", "]d", vim.diagnostic.goto_next, opts)         -- next diagnostic
         vim.keymap.set("n", "<leader>q", ":cclose<CR>", opts)
@@ -520,17 +696,23 @@ do
         return vim.json.decode(result.stdout)
     end
 
+    -- The PR's base (or the default branch), preferring the remote ref because local main is often stale.
+    -- @{upstream} is not used: it is usually origin/<this branch>, which diffs to nothing once pushed.
     local function branch_base(root, pr)
-        if pr and pr.baseRefName then return pr.baseRefName end
-        local upstream = lines({ "git", "rev-parse", "--abbrev-ref", "@{upstream}" }, root)[1]
-        if upstream then return upstream end
-        for _, candidate in ipairs({ "main", "master", "origin/main", "origin/master" }) do
-            if #lines({ "git", "rev-parse", "--verify", candidate }, root) > 0 then
+        local name = pr and pr.baseRefName
+        if not name then
+            local head = lines({ "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD" }, root)[1]
+            name = head and head:gsub("^origin/", "") or "main"
+        end
+        for _, candidate in ipairs({ "origin/" .. name, name }) do
+            if #lines({ "git", "rev-parse", "--verify", "--quiet", candidate }, root) > 0 then
                 return candidate
             end
         end
         return nil
     end
+
+    local pr_cache = {}
 
     -- Files open in the window the sidebar was opened from, else the largest file window in the tab
     local function editor_window()
@@ -590,24 +772,35 @@ do
         local start = (file:sub(1, 1) == "/" and file) or (cwd and vim.fn.isdirectory(cwd) == 1 and cwd)
         local root = start and vim.fs.root(start, { ".git" })
         if not root then vim.notify("Not inside a Git repository", vim.log.levels.WARN); return end
-        local pr = gh_pr(root)
+        local branch = lines({ "git", "branch", "--show-current" }, root)[1] or "HEAD"
+        local key = root .. ":" .. branch
+        if pr_cache[key] == nil then
+            pr_cache[key] = gh_pr(root) or false
+        end
+        local pr = pr_cache[key] or nil
         local base = branch_base(root, pr)
         if not base then vim.notify("Could not determine branch base", vim.log.levels.WARN); return end
+        local fork = lines({ "git", "merge-base", base, "HEAD" }, root)[1]
+        if not fork then vim.notify("No merge base with " .. base, vim.log.levels.WARN); return end
 
-        local diff = lines({ "git", "diff", "--name-status", base .. "...HEAD" }, root)
+        -- Fork point to working tree: the branch's own commits plus uncommitted edits, nothing from base
+        local diff = lines({ "git", "diff", "--name-status", "--find-renames", fork }, root)
+        for _, path in ipairs(lines({ "git", "ls-files", "--others", "--exclude-standard" }, root)) do
+            table.insert(diff, "?\t" .. path)
+        end
+        local commits = lines({ "git", "log", "--no-merges", "--format=%h  %s", fork .. "..HEAD" }, root)
         local files = {}
-        local display = { " BRANCH  " .. (lines({ "git", "branch", "--show-current" }, root)[1] or "HEAD"),
-            " BASE    " .. base, "" }
-        if pr and pr.commits and #pr.commits > 0 then
-            table.insert(display, " STACK / PR COMMITS")
-            for _, commit in ipairs(pr.commits) do
-                table.insert(display, string.format("   %s  %s", commit.oid:sub(1, 7), commit.messageHeadline))
+        local display = { " BRANCH  " .. branch, " BASE    " .. base .. " @ " .. fork:sub(1, 7), "" }
+        if #commits > 0 then
+            table.insert(display, " COMMITS")
+            for _, commit in ipairs(commits) do
+                table.insert(display, "   " .. commit)
             end
             table.insert(display, "")
         end
         table.insert(display, " CHANGED FILES")
         for _, item in ipairs(diff) do
-            local path = item:match("^%S+%s+(.+)$") or item
+            local path = item:match("([^\t]+)$") or item
             table.insert(files, path)
             table.insert(display, "   " .. item)
         end
@@ -662,3 +855,64 @@ vim.keymap.set("n", "<leader>z", function()
     vim.cmd("wincmd |")
     vim.cmd("wincmd _")
 end, { desc = "Toggle zoom on the current split" })
+
+-- Prettier from the project's own install, with the project's config: on save, and on <leader>cf
+local prettier_filetypes = {
+    javascript = true, javascriptreact = true, typescript = true, typescriptreact = true,
+    json = true, jsonc = true, css = true, scss = true, html = true, markdown = true, yaml = true,
+}
+
+local function project_prettier(file)
+    local dir = vim.fs.dirname(file)
+    while dir do
+        local bin = dir .. "/node_modules/.bin/prettier"
+        if vim.uv.fs_stat(bin) then
+            return bin
+        end
+        local parent = vim.fs.dirname(dir)
+        dir = parent ~= dir and parent or nil
+    end
+end
+
+local function prettier_format(bufnr)
+    local file = vim.api.nvim_buf_get_name(bufnr)
+    local prettier = file ~= "" and prettier_filetypes[vim.bo[bufnr].filetype] and project_prettier(file)
+    if not prettier then
+        return
+    end
+    local input = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n") .. "\n"
+    local result = vim.system({ prettier, "--stdin-filepath", file }, { stdin = input, text = true }):wait()
+    -- A file prettier cannot parse is saved unformatted; the parse error already shows as a diagnostic.
+    if result.code ~= 0 then
+        return
+    end
+    if result.stdout == input then
+        return
+    end
+    local view = vim.fn.winsaveview()
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, vim.split(result.stdout, "\n", { trimempty = false }))
+    if vim.api.nvim_buf_get_lines(bufnr, -2, -1, false)[1] == "" then
+        vim.api.nvim_buf_set_lines(bufnr, -2, -1, false, {})
+    end
+    vim.fn.winrestview(view)
+end
+
+vim.api.nvim_create_autocmd("BufWritePre", {
+    callback = function(args)
+        prettier_format(args.buf)
+    end,
+})
+vim.keymap.set("n", "<leader>cf", function()
+    prettier_format(0)
+end, { desc = "Format with Prettier" })
+
+-- The TypeScript server's own formatter ignores .prettierrc, so it never formats
+vim.api.nvim_create_autocmd("LspAttach", {
+    callback = function(args)
+        local client = vim.lsp.get_client_by_id(args.data.client_id)
+        if client and (client.name == "ts_ls" or client.name == "tsc_lsp") then
+            client.server_capabilities.documentFormattingProvider = false
+            client.server_capabilities.documentRangeFormattingProvider = false
+        end
+    end,
+})
