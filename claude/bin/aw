@@ -12,7 +12,8 @@
 # started this terminal, otherwise found among this user's Neovim servers):
 #   aw status                                   list conversations as JSON
 #   aw spawn <worktree|branch|main> <brief.md> [title]
-#                                               start Claude there, told to carry out the brief
+#                                               start Claude there, told to carry out the brief; waits
+#                                               until it has a conversation id, exits 1 if it never does
 #   aw remove <conversation-id|title>           stop and remove a conversation, as dd does
 set -euo pipefail
 
@@ -192,7 +193,29 @@ case "$command" in
     ;;
 esac
 
-response="$(nvim --server "$NVIM" --remote-expr "luaeval('require(\"agent-workspaces\").rpc(_A)', '$request')")"
+rpc() { nvim --server "$NVIM" --remote-expr "luaeval('require(\"agent-workspaces\").rpc(_A)', '$request')"; }
+
+field() { python3 -I -c 'import json, sys; v = json.load(sys.stdin).get(sys.argv[1]); print("" if v is None else v)' "$1"; }
+
+response="$(rpc)"
+
+# A spawn into a worktree the plugin has not discovered yet is queued, not started. Wait until the plugin
+# decides it, so a caller never takes a queued spawn for a started one.
+if [ "$command" = spawn ] && [ "$(printf '%s' "$response" | field queued)" = True ]; then
+  request_id="$(printf '%s' "$response" | field request_id)"
+  deadline=$((SECONDS + 75))
+  while :; do
+    sleep 0.5
+    write_request op spawn_result id "$request_id"
+    response="$(rpc)"
+    [ "$(printf '%s' "$response" | field pending)" = True ] || break
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      response="{\"ok\": false, \"error\": \"spawn $request_id was still queued after 75 seconds\"}"
+      break
+    fi
+  done
+fi
+
 printf '%s\n' "$response" | python3 -I -c 'import json, sys
 data = json.load(sys.stdin)
 print(json.dumps(data, indent=2))
