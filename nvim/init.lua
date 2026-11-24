@@ -16,6 +16,17 @@ vim.opt.mouse = "a"
 vim.opt.number = true
 vim.opt.relativenumber = true
 vim.opt.signcolumn = "yes"
+-- A window keeps its options when it shows a new buffer, so a file opened in a window first used by a side pane
+-- (the agent-workspaces pane, the branch-files sidebar) would show no line numbers or signs.
+vim.api.nvim_create_autocmd("BufWinEnter", {
+    callback = function(args)
+        if vim.bo[args.buf].buftype == "" and vim.api.nvim_buf_get_name(args.buf) ~= "" then
+            vim.wo.number = true
+            vim.wo.relativenumber = true
+            vim.wo.signcolumn = "yes"
+        end
+    end,
+})
 vim.opt.cursorline = true
 vim.opt.scrolloff = 8
 vim.opt.termguicolors = true
@@ -208,6 +219,34 @@ require("lazy").setup({
         config = function()
             vim.cmd.colorscheme("tokyonight")
         end,
+    },
+
+    {
+        "lewis6991/gitsigns.nvim",
+        event = { "BufReadPre", "BufNewFile" },
+        opts = {
+            attach_to_untracked = true,
+            on_attach = function(bufnr)
+                local root = vim.fs.root(bufnr, ".git")
+                if not root then return end
+                local fork
+                for _, base in ipairs({ "origin/HEAD", "origin/main", "main" }) do
+                    local result = vim.system({ "git", "merge-base", base, "HEAD" }, { cwd = root, text = true }):wait()
+                    if result.code == 0 then
+                        fork = vim.trim(result.stdout)
+                        break
+                    end
+                end
+                if not fork then return end
+                vim.schedule(function()
+                    if vim.api.nvim_buf_is_valid(bufnr) then
+                        vim.api.nvim_buf_call(bufnr, function()
+                            require("gitsigns").change_base(fork)
+                        end)
+                    end
+                end)
+            end,
+        },
     },
 
     -- Fuzzy finder
@@ -508,7 +547,7 @@ require("lazy").setup({
             require("aerial").setup({
                 layout = { min_width = 30, default_direction = "right", placement = "edge" },
                 attach_mode = "global",
-                open_automatic = true,
+                open_automatic = false,
                 -- aerial's default kinds, plus Variable: the TypeScript server reports a type alias as a variable
                 filter_kind = { "Class", "Constructor", "Enum", "Function", "Interface", "Module", "Method", "Struct", "Variable" },
                 -- Keep top-level symbols and members of a type. Nothing from inside a function, method,
@@ -527,7 +566,7 @@ require("lazy").setup({
             })
         end,
         keys = {
-            { "<leader>a", "<cmd>AerialToggle!<CR>", desc = "Toggle symbol tree" },
+            { "<leader>s", "<cmd>AerialToggle!<CR>", desc = "Toggle symbol tree" },
         },
     },
 
@@ -677,9 +716,10 @@ vim.keymap.set("n", "<leader>tc", function()
 end, { desc = "Close test terminal" })
 
 -- Git branch files: a deliberately small, right-hand navigation sidebar.
--- <leader>gf toggles it; / (or <CR>) fuzzy-finds its files.
 do
-    local git_sidebar = { win = nil, buf = nil, root = nil, files = {} }
+    local git_sidebar = { win = nil, buf = nil, root = nil, header = {}, prefix = "", entries = {}, query = "", line_paths = {} }
+    local sidebar_ns = vim.api.nvim_create_namespace("git_sidebar")
+    local status_hl = { A = "Added", M = "Changed", R = "Changed", C = "Changed", D = "Removed" }
 
     local function lines(cmd, cwd)
         local result = vim.system(cmd, { cwd = cwd, text = true }):wait()
@@ -743,27 +783,96 @@ do
         vim.cmd("edit " .. vim.fn.fnameescape(git_sidebar.root .. "/" .. path))
     end
 
-    local function fuzzy_files()
-        if #git_sidebar.files == 0 then return end
-        require("telescope.pickers").new({}, {
-            prompt_title = "Branch files",
-            finder = require("telescope.finders").new_table({ results = git_sidebar.files }),
-            sorter = require("telescope.config").values.generic_sorter({}),
-            previewer = require("telescope.previewers").vim_buffer_cat.new({}),
-            attach_mappings = function(_, map)
-                local actions = require("telescope.actions")
-                local action_state = require("telescope.actions.state")
-                local function select()
-                    local entry = action_state.get_selected_entry()
-                    actions.close(_)
-                    if entry then open_file(entry[1] or entry.value) end
-                end
-                map("i", "<CR>", select)
-                map("n", "<CR>", select)
-                return true
-            end,
-        }):find()
+    local function render(move_cursor)
+        local buf = git_sidebar.buf
+        local entries = git_sidebar.entries
+        if git_sidebar.query ~= "" then
+            entries = vim.fn.matchfuzzy(entries, git_sidebar.query, { key = "short" })
+        end
+        local display = vim.list_extend({}, git_sidebar.header)
+        if git_sidebar.filtering then
+            table.insert(display, " FILTER  " .. git_sidebar.query .. "▏")
+        else
+            table.insert(display, git_sidebar.query == "" and " CHANGED FILES" or " FILTER  " .. git_sidebar.query)
+        end
+        if git_sidebar.prefix ~= "" then
+            table.insert(display, "   " .. vim.fn.pathshorten(git_sidebar.prefix:sub(1, -2)) .. "/")
+        end
+        local first_line = #display + 1
+        local highlights = {}
+        git_sidebar.line_paths = {}
+        for _, entry in ipairs(entries) do
+            local dir = vim.fs.dirname(entry.short)
+            local line = string.format("   %s  %s", entry.status, vim.fs.basename(entry.short))
+            local dir_start = #line
+            if dir ~= "." then
+                line = line .. "  " .. dir
+            end
+            table.insert(display, line)
+            git_sidebar.line_paths[#display] = entry.path
+            table.insert(highlights, { line = #display - 1, status = entry.status, dir_start = dir_start, finish = #line })
+        end
+        if #entries == 0 then
+            table.insert(display, git_sidebar.query == "" and "   (no changes since base)" or "   (no match)")
+        end
+        git_sidebar.first_path = entries[1] and entries[1].path
+
+        vim.bo[buf].modifiable = true
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, display)
+        vim.bo[buf].modifiable = false
+        vim.api.nvim_buf_clear_namespace(buf, sidebar_ns, 0, -1)
+        for _, mark in ipairs(highlights) do
+            vim.api.nvim_buf_set_extmark(buf, sidebar_ns, mark.line, 3, {
+                end_col = 4, hl_group = status_hl[mark.status] or "Comment",
+            })
+            vim.api.nvim_buf_set_extmark(buf, sidebar_ns, mark.line, mark.dir_start, {
+                end_col = mark.finish, hl_group = "Comment",
+            })
+        end
+        if move_cursor and git_sidebar.win and vim.api.nvim_win_is_valid(git_sidebar.win) then
+            vim.api.nvim_win_set_cursor(git_sidebar.win, { math.min(first_line, #display), 0 })
+        end
     end
+
+    local function set_query(query)
+        git_sidebar.query = query
+        render(true)
+    end
+
+    local filter_chars = vim.split("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/", "")
+
+    local function sidebar_map(lhs, fn, desc)
+        vim.keymap.set("n", lhs, fn, { buffer = git_sidebar.buf, nowait = true, desc = desc })
+    end
+
+    local set_filtering
+    local function start_filtering() set_filtering(true) end
+
+    set_filtering = function(on)
+        git_sidebar.filtering = on
+        if on then
+            for _, char in ipairs(filter_chars) do
+                sidebar_map(char, function() set_query(git_sidebar.query .. char) end, "Filter branch files")
+            end
+            sidebar_map("<BS>", function() set_query(git_sidebar.query:sub(1, -2)) end, "Delete a filter character")
+        else
+            for _, lhs in ipairs(vim.list_extend({ "<BS>" }, filter_chars)) do
+                pcall(vim.keymap.del, "n", lhs, { buffer = git_sidebar.buf })
+            end
+            for _, lhs in ipairs({ "i", "a", "/" }) do
+                sidebar_map(lhs, start_filtering, "Filter branch files")
+            end
+        end
+        render(on)
+    end
+
+    local function open_selected()
+        local path = git_sidebar.line_paths[vim.api.nvim_win_get_cursor(0)[1]]
+            or (git_sidebar.query ~= "" and git_sidebar.first_path)
+        if git_sidebar.filtering then set_filtering(false) end
+        if path then open_file(path) end
+    end
+
 
     local function refresh()
         -- Terminal and plugin-pane buffers have no file path, and the cwd may be a removed worktree
@@ -789,37 +898,49 @@ do
             table.insert(diff, "?\t" .. path)
         end
         local commits = lines({ "git", "log", "--no-merges", "--format=%h  %s", fork .. "..HEAD" }, root)
-        local files = {}
-        local display = { " BRANCH  " .. branch, " BASE    " .. base .. " @ " .. fork:sub(1, 7), "" }
+        local header = { " BRANCH  " .. branch, " BASE    " .. base .. " @ " .. fork:sub(1, 7), "" }
         if #commits > 0 then
-            table.insert(display, " COMMITS")
+            table.insert(header, " COMMITS")
             for _, commit in ipairs(commits) do
-                table.insert(display, "   " .. commit)
+                table.insert(header, "   " .. commit)
             end
-            table.insert(display, "")
+            table.insert(header, "")
         end
-        table.insert(display, " CHANGED FILES")
+        local entries = {}
         for _, item in ipairs(diff) do
-            local path = item:match("([^\t]+)$") or item
-            table.insert(files, path)
-            table.insert(display, "   " .. item)
+            table.insert(entries, { status = item:sub(1, 1), path = item:match("([^\t]+)$") or item })
         end
-        if #files == 0 then table.insert(display, "   (no changes since base)") end
+        local prefix = entries[1] and entries[1].path:match("^(.*/)") or ""
+        for _, entry in ipairs(entries) do
+            while prefix ~= "" and entry.path:sub(1, #prefix) ~= prefix do
+                prefix = prefix:match("^(.*/)[^/]*/$") or ""
+            end
+        end
+        for _, entry in ipairs(entries) do
+            entry.short = entry.path:sub(#prefix + 1)
+        end
 
-        git_sidebar.root, git_sidebar.files = root, files
+        git_sidebar.root, git_sidebar.header, git_sidebar.prefix, git_sidebar.entries = root, header, prefix, entries
         if not git_sidebar.buf or not vim.api.nvim_buf_is_valid(git_sidebar.buf) then
             git_sidebar.buf = vim.api.nvim_create_buf(false, true)
             vim.bo[git_sidebar.buf].buftype = "nofile"
             vim.bo[git_sidebar.buf].bufhidden = "wipe"
             vim.bo[git_sidebar.buf].swapfile = false
-            vim.keymap.set("n", "<CR>", fuzzy_files, { buffer = git_sidebar.buf, desc = "Find branch file" })
-            vim.keymap.set("n", "/", fuzzy_files, { buffer = git_sidebar.buf, desc = "Fuzzy-find branch file" })
-            vim.keymap.set("n", "r", refresh, { buffer = git_sidebar.buf, desc = "Refresh branch files" })
+            vim.bo[git_sidebar.buf].filetype = "branchfiles"
+            git_sidebar.query = ""
+            sidebar_map("<CR>", open_selected, "Open branch file")
+            sidebar_map("<Esc>", function()
+                if git_sidebar.filtering then
+                    set_filtering(false)
+                else
+                    set_query("")
+                end
+            end, "Stop filtering, then clear the filter")
+            sidebar_map("<C-r>", refresh, "Refresh branch files")
+            set_filtering(false)
+        else
+            render(false)
         end
-        vim.bo[git_sidebar.buf].modifiable = true
-        vim.api.nvim_buf_set_lines(git_sidebar.buf, 0, -1, false, display)
-        vim.bo[git_sidebar.buf].modifiable = false
-        vim.bo[git_sidebar.buf].filetype = "git"
         if not git_sidebar.win or not vim.api.nvim_win_is_valid(git_sidebar.win) then
             git_sidebar.source_win = vim.api.nvim_get_current_win()
             vim.cmd("botright 38vnew")
